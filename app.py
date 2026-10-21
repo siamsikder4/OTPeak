@@ -7,6 +7,7 @@ import os
 import re
 import html
 import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -54,315 +55,10 @@ cached_services_kb = None
 cached_countries_kb = {}
 cached_leaderboard_text = ""
 
-def auto_cache_menu_thread():
-    global cached_services_kb, cached_countries_kb, voltx_auto_mode, voltx_dynamic_data
-    while True:
-        try:
-            if voltx_auto_mode and voltx_dynamic_data:
-                service_hits = [(sid, s_data, sum(r["hits"] for r in s_data["ranges"].values())) for sid, s_data in voltx_dynamic_data.items()]
-                top_services = sorted(service_hits, key=lambda x: x[2], reverse=True)[:15] # 🌟 Top 15 Services
-                
-                new_srv_kb = {"inline_keyboard": []}
-                row = []; styles = ["primary", "success", "danger"]; style_idx = 0
-                for sid, data, hits in top_services:
-                    safe_sid = html.escape(str(sid))
-                    row.append({"text": safe_sid, "callback_data": f"srv_{safe_sid[:15]}", "style": styles[style_idx % 3], "icon_custom_emoji_id": data["emoji_id"]})
-                    style_idx += 1
-                    if len(row) == 2: new_srv_kb["inline_keyboard"].append(row); row = []
-                if row: new_srv_kb["inline_keyboard"].append(row)
-                new_srv_kb["inline_keyboard"].append([{"text": "CLOSE", "callback_data": "close_panel", "icon_custom_emoji_id": "5438541186539232243", "style": "danger"}])
-                
-                cached_services_kb = new_srv_kb
-
-                new_cnt_kb = {}
-                for sid, data, hits in top_services:
-                    safe_sid_short = html.escape(str(sid))[:15]
-                    country_map = {}
-                    for r, r_data in data["ranges"].items():
-                        clean_r = str(r).replace("X", "")
-                        if not re.match(r'^\d+$', clean_r): continue
-                        c_code, c_name = get_country_info(clean_r)
-                        if c_code not in country_map: country_map[c_code] = {"name": c_name, "hits": 0}
-                        country_map[c_code]["hits"] += r_data["hits"]
-                    
-                    top_countries = sorted(country_map.items(), key=lambda x: x[1]["hits"], reverse=True)[:15] # 🌟 Top 15 Countries
-                    
-                    cnt_kb = {"inline_keyboard": []}
-                    styles_c = ["primary", "success", "danger"]; style_idx_c = 0
-                    std_service = detect_service("", sid)
-                    rate = get_otp_reward(std_service)
-                    
-                    for c_code, c_data in top_countries:
-                        c_name_full = c_data["name"]
-                        parts = c_name_full.split(" ", 1)
-                        emoji_char = parts[0]
-                        clean_name = parts[1] if len(parts) > 1 else c_name_full
-                        
-                        btn_text = f"Other (+{c_code}) - {rate} TK" if "Other" in clean_name else f"{clean_name} (+{c_code}) - {rate} TK"
-                        btn = {"text": btn_text, "callback_data": f"cc_{safe_sid_short}_{c_code}", "style": styles_c[style_idx_c % 3]}
-                        if emoji_char in GLOBAL_BODY_EMOJIS: btn["icon_custom_emoji_id"] = GLOBAL_BODY_EMOJIS[emoji_char]
-                            
-                        cnt_kb["inline_keyboard"].append([btn])
-                        style_idx_c += 1
-                        
-                    cnt_kb["inline_keyboard"].append([{"text": "BACK", "callback_data": "back_to_services", "icon_custom_emoji_id": "5438541186539232243", "style": "danger"}])
-                    new_cnt_kb[safe_sid_short] = cnt_kb
-                    
-                cached_countries_kb = new_cnt_kb
-                
-            # --- 🌟 Leaderboard Caching ---
-            global cached_leaderboard_text, daily_user_otps
-            today = time.strftime("%Y-%m-%d")
-            if daily_user_otps.get("date") != today:
-                daily_user_otps["date"] = today
-                daily_user_otps["users"] = {}
-                
-            top_users = sorted(daily_user_otps["users"].items(), key=lambda x: x[1], reverse=True)[:5]
-            lb_msg = "<blockquote><tg-emoji emoji-id=\"5240021484516185513\">🏆</tg-emoji> <b>𝗧𝗢𝗣 𝟱 𝗟𝗘𝗔𝗗𝗘𝗥𝗕𝗢𝗔𝗥𝗗 (TODAY)</b></blockquote>\n━━━━━━━━━━━━━━━━━\n"
-            emoji_map = [("1️⃣", "5238176680098440792"), ("2️⃣", "5237806896299157399"), ("3️⃣", "5239965456667812809"), ("4️⃣", "5237911487342751418"), ("5️⃣", "5240278297790686165")]
-            
-            if not top_users: 
-                lb_msg += "<i>No OTPs received today.</i>\n"
-            else:
-                for idx, (uid_str, otp_count) in enumerate(top_users):
-                    u_data = get_user(int(uid_str))
-                    fname = u_data["first_name"] if u_data else "User"
-                    emoji_char, emoji_id = emoji_map[idx]
-                    lb_msg += f"<blockquote><tg-emoji emoji-id=\"{emoji_id}\">{emoji_char}</tg-emoji> <a href='tg://user?id={uid_str}'>{html.escape(str(fname))}</a> - {otp_count} OTP</blockquote>\n"
-            lb_msg += "━━━━━━━━━━━━━━━━━"
-            cached_leaderboard_text = lb_msg
-            
-        except Exception as e:
-            pass
-        time.sleep(5) # 🌟 5 সেকেন্ড পরপর ব্যাকগ্রাউন্ডে ক্যাশ রেডি হবে
-
-# Admin Settings (DXA Control)
-bot_settings = {
-    "withdraw_on": True,
-    "min_withdraw": 10.0,
-    "support_link": "",
-    "w_group": "",
-    "auto_br_on": False,
-    "auto_br_interval": 60,
-    "cooldown": 5, # Default 5 seconds
-    "num_req": 1, # Default 1 number per request
-    "w_methods": ["bKash", "Nagad"],
-    "otp_default_rate": 0.15,
-    "otp_service_rates": {},
-    "main_channel_link": ""
-}
-
-BOT_DATA_FILE = "bot_data.json"
-USERS_LIST_FILE = "users_list.json"
-
 # ==========================================
-# Helper: Get Active Voltx Key & Rates
+# Global Emojis Map & Premium Apps Initial Setup
 # ==========================================
-def get_api_key():
-    return random.choice(voltx_keys) if voltx_keys else API_2OO9_KEY_DEFAULT
-
-def get_otp_reward(service_name):
-    rates = bot_settings.get("otp_service_rates", {})
-    val = rates.get(service_name, bot_settings.get("otp_default_rate", 0.5))
-    return float(val)
-
-def update_daily_stat(key, amount=1):
-    global daily_stats
-    today = time.strftime("%Y-%m-%d")
-    if daily_stats.get("date") != today:
-        daily_stats = {"date": today, "numbers": 0, "otps": 0}
-    daily_stats[key] = daily_stats.get(key, 0) + amount
-
-# ==========================================
-# Local Storage Managers
-# ==========================================
-def load_local_data():
-    global recent_traffic, voltx_dynamic_data, voltx_keys, force_join_status, force_join_channels, voltx_auto_mode, otp_forward_groups, otp_button_link, recent_success_otps, bot_settings, user_active_sessions, daily_stats, daily_user_otps
-    if os.path.exists(BOT_DATA_FILE):
-        try:
-            with open(BOT_DATA_FILE, "r") as f:
-                data = json.load(f)
-                recent_traffic = data.get("recent_traffic", [])
-                voltx_dynamic_data = data.get("voltx_dynamic_data", {})
-                loaded_keys = data.get("voltx_keys", [])
-                
-                if not loaded_keys:
-                    voltx_keys = [API_2OO9_KEY_DEFAULT]
-                else:
-                    voltx_keys = loaded_keys
-                    
-                force_join_status = data.get("force_join_status", False)
-                force_join_channels = data.get("force_join_channels", [])
-                voltx_auto_mode = data.get("voltx_auto_mode", True)
-                otp_forward_groups = data.get("otp_forward_groups", [])
-                otp_button_link = data.get("otp_button_link", "https://t.me/your_default_bot")
-                recent_success_otps = set(data.get("recent_success_otps", []))
-                
-                loaded_settings = data.get("bot_settings", {})
-                for k, v in loaded_settings.items(): bot_settings[k] = v
-                
-                daily_stats = data.get("daily_stats", {"date": "", "numbers": 0, "otps": 0})
-                daily_user_otps = data.get("daily_user_otps", {"date": "", "users": {}})
-                user_active_sessions = data.get("user_active_sessions", {})
-        except Exception as e:
-            print(f"Error loading local data: {e}")
-
-def save_local_data():
-    global recent_traffic, voltx_dynamic_data, voltx_keys, force_join_status, force_join_channels, voltx_auto_mode, otp_forward_groups, otp_button_link, recent_success_otps, bot_settings, user_active_sessions, daily_stats
-    try:
-        with open(BOT_DATA_FILE, "w") as f:
-            json.dump({
-                "recent_traffic": recent_traffic, 
-                "voltx_dynamic_data": voltx_dynamic_data,
-                "voltx_keys": voltx_keys,
-                "force_join_status": force_join_status,
-                "force_join_channels": force_join_channels,
-                "voltx_auto_mode": voltx_auto_mode,
-                "otp_forward_groups": otp_forward_groups,
-                "otp_button_link": otp_button_link,
-                "recent_success_otps": list(recent_success_otps),
-                "bot_settings": bot_settings,
-                "user_active_sessions": user_active_sessions,
-                "daily_stats": daily_stats,
-                "daily_user_otps": daily_user_otps
-            }, f)
-    except Exception as e:
-        print(f"Error saving local data: {e}")
-        
-    # 🌟 Firebase এ লাইভ আপডেট পাঠানো
-    if current_db_mode == "firebase" and db_firebase:
-        try:
-            db_firebase.collection('settings').document('bot_config').set({
-                "bot_settings": bot_settings,
-                "force_join_status": force_join_status,
-                "force_join_channels": force_join_channels,
-                "otp_forward_groups": otp_forward_groups,
-                "otp_button_link": otp_button_link,
-                "voltx_keys": voltx_keys,
-                "voltx_auto_mode": voltx_auto_mode
-            }, merge=True)
-        except: pass
-
-# গ্লোবাল ভেরিয়েবলে ইউজার লিস্ট ক্যাশ করে রাখা হলো
-cached_user_list = set()
-
-def add_to_broadcast_list(user_id):
-    global cached_user_list
-    if not cached_user_list and os.path.exists(USERS_LIST_FILE):
-        try:
-            with open(USERS_LIST_FILE, "r") as f:
-                cached_user_list = set(json.load(f))
-        except: pass
-        
-    if user_id not in cached_user_list:
-        cached_user_list.add(user_id)
-        try:
-            with open(USERS_LIST_FILE, "w") as f:
-                json.dump(list(cached_user_list), f)
-        except: pass
-
-def get_all_user_ids():
-    global user_cache
-    users = set()
-    
-    # 🌟 ১. প্রথমে RAM Cache থেকে দ্রুত ইউজার নিবে
-    for uid in user_cache.keys():
-        users.add(int(uid))
-        
-    # 🌟 ২. এরপর লোকাল JSON ফাইল থেকে নিবে
-    if os.path.exists(USERS_LIST_FILE):
-        try:
-            with open(USERS_LIST_FILE, "r") as f:
-                for u in json.load(f): users.add(int(u))
-        except: pass
-        
-    #RAM সবসময় আপডেটেড থাকে!
-    return list(users)
-
-# ==========================================
-# Telegram APIs & Force Join Helpers
-# ==========================================
-def get_bot_info():
-    try:
-        res = requests.get(BASE_URL + "getMe").json()
-        if res.get("ok"): return res["result"]["username"]
-    except Exception: pass
-    return ""
-
-def set_bot_commands():
-    commands = [{"command": "start", "description": "Start the bot or refresh menu"}]
-    try: requests.post(BASE_URL + "setMyCommands", json={"commands": commands})
-    except Exception: pass
-
-def send_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
-    payload = {"chat_id": chat_id, "text": apply_emojis(text), "parse_mode": parse_mode}
-    if reply_markup: payload["reply_markup"] = reply_markup
-    try: return requests.post(BASE_URL + "sendMessage", json=payload).json()
-    except Exception: return None
-
-def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode="HTML"):
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": apply_emojis(text), "parse_mode": parse_mode}
-    if reply_markup: payload["reply_markup"] = reply_markup
-    try: requests.post(BASE_URL + "editMessageText", json=payload)
-    except Exception: pass
-
-def answer_callback_query(callback_query_id, text="", show_alert=False):
-    payload = {"callback_query_id": callback_query_id, "text": text, "show_alert": show_alert}
-    requests.post(BASE_URL + "answerCallbackQuery", json=payload)
-
-def delete_message(chat_id, message_id):
-    payload = {"chat_id": chat_id, "message_id": message_id}
-    requests.post(BASE_URL + "deleteMessage", json=payload)
-
-def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
-    payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
-    if reply_markup: payload["reply_markup"] = reply_markup
-    try: return requests.post(BASE_URL + "copyMessage", json=payload).json()
-    except Exception: return None
-
-def get_chat_details(chat_identifier):
-    chat_identifier = str(chat_identifier).strip()
-    if chat_identifier.startswith("https://t.me/"):
-        chat_identifier = "@" + chat_identifier.split("/")[-1]
-    elif not chat_identifier.startswith("@") and not chat_identifier.startswith("-100"):
-        chat_identifier = "@" + chat_identifier
-        
-    url = BASE_URL + "getChat"
-    res = requests.get(url, params={"chat_id": chat_identifier}).json()
-    if res.get("ok"):
-        chat = res["result"]
-        chat_data = {
-            "id": chat["id"],
-            "username": "@" + chat["username"] if "username" in chat else "",
-            "title": chat.get("title", "Private Channel"),
-            "invite_link": chat.get("invite_link", "")
-        }
-        if not chat_data["invite_link"]:
-            inv_res = requests.post(BASE_URL + "exportChatInviteLink", json={"chat_id": chat["id"]}).json()
-            if inv_res.get("ok"):
-                chat_data["invite_link"] = inv_res["result"]
-        return chat_data
-    return None
-
-def is_user_joined(user_id):
-    if not force_join_status or not force_join_channels: return True
-    if user_id == ADMIN_ID: return True
-    
-    for ch in force_join_channels:
-        try:
-            res = requests.get(BASE_URL + "getChatMember", params={"chat_id": ch["id"], "user_id": user_id}).json()
-            if res.get("ok"):
-                status = res["result"]["status"]
-                if status in ["left", "kicked"]: return False
-            else:
-                return False
-        except: return False
-    return True
-
-# ==========================================
-# Global Emojis Map
-# ==========================================
-GLOBAL_BODY_EMOJIS = {
+DEFAULT_GLOBAL_BODY_EMOJIS = {
     "➖": "5870818207383686839", "🚫": "5334807341109908955", "😒": "5334763399299506604",
     "🖥": "5334880948259427772", "🌐": "5334590977837403844", "🌟": "5337102391244263212",
     "🕓": "5336983442125001376", "⌛": "5337172996211648018", "💬": "5337302974806922068",
@@ -466,22 +162,7 @@ GLOBAL_BODY_EMOJIS = {
     "🇲🇴": "6323557758096377611"
 }
 
-def apply_emojis(text):
-    hidden = []
-    def hide(match):
-        hidden.append(match.group(0))
-        return f"__TG_EMOJI_{len(hidden)-1}__"
-    text = re.sub(r'<tg-emoji[^>]*>.*?</tg-emoji>', hide, text)
-    for char, eid in GLOBAL_BODY_EMOJIS.items():
-        text = text.replace(char, f'<tg-emoji emoji-id="{eid}">{char}</tg-emoji>')
-    for i, h in enumerate(hidden):
-        text = text.replace(f"__TG_EMOJI_{i}__", h)
-    return text
-
-# ==========================================
-# Premium Apps & Service Keywords Setup
-# ==========================================
-PREMIUM_APPS = {
+DEFAULT_PREMIUM_APPS = {
     "Facebook": {"emoji": "📘", "id": "5429172110520003976"},
     "WhatsApp": {"emoji": "💬", "id": "5429612632430654504"},
     "Telegram": {"emoji": "✈️", "id": "5429136513831057777"},
@@ -505,6 +186,21 @@ PREMIUM_APPS = {
     "Imo": {"emoji": "💭", "id": "5431378937731129128"},
     "Other": {"emoji": "📶", "id": "5429353834881261942"}
 }
+
+GLOBAL_BODY_EMOJIS = dict(DEFAULT_GLOBAL_BODY_EMOJIS)
+PREMIUM_APPS = {k: dict(v) for k, v in DEFAULT_PREMIUM_APPS.items()}
+
+def apply_emojis(text):
+    hidden = []
+    def hide(match):
+        hidden.append(match.group(0))
+        return f"__TG_EMOJI_{len(hidden)-1}__"
+    text = re.sub(r'<tg-emoji[^>]*>.*?</tg-emoji>', hide, text)
+    for char, eid in GLOBAL_BODY_EMOJIS.items():
+        text = text.replace(char, f'<tg-emoji emoji-id="{eid}">{char}</tg-emoji>')
+    for i, h in enumerate(hidden):
+        text = text.replace(f"__TG_EMOJI_{i}__", h)
+    return text
 
 SERVICE_SMS_KEYWORDS = {
     "Facebook": ["facebook", "fb code", "fb", "meta"],
@@ -590,10 +286,331 @@ def get_country_info(range_str):
         if clean_range.startswith(code): return code, name
     return clean_range[:3], f"🏳️ Other (+{clean_range[:3]})"
 
+def auto_cache_menu_thread():
+    global cached_services_kb, cached_countries_kb, voltx_auto_mode, voltx_dynamic_data
+    while True:
+        try:
+            if voltx_auto_mode and voltx_dynamic_data:
+                service_hits = [(sid, s_data, sum(r["hits"] for r in s_data["ranges"].values())) for sid, s_data in voltx_dynamic_data.items()]
+                top_services = sorted(service_hits, key=lambda x: x[2], reverse=True)[:15] # 🌟 Top 15 Services
+                
+                new_srv_kb = {"inline_keyboard": []}
+                row = []; styles = ["primary", "success", "danger"]; style_idx = 0
+                for sid, data, hits in top_services:
+                    safe_sid = html.escape(str(sid))
+                    row.append({"text": safe_sid, "callback_data": f"srv_{safe_sid[:15]}", "style": styles[style_idx % 3], "icon_custom_emoji_id": data["emoji_id"]})
+                    style_idx += 1
+                    if len(row) == 2: new_srv_kb["inline_keyboard"].append(row); row = []
+                if row: new_srv_kb["inline_keyboard"].append(row)
+                new_srv_kb["inline_keyboard"].append([{"text": "CLOSE", "callback_data": "close_panel", "icon_custom_emoji_id": "5438541186539232243", "style": "danger"}])
+                
+                cached_services_kb = new_srv_kb
+
+                new_cnt_kb = {}
+                for sid, data, hits in top_services:
+                    safe_sid_short = html.escape(str(sid))[:15]
+                    country_map = {}
+                    for r, r_data in data["ranges"].items():
+                        clean_r = str(r).replace("X", "")
+                        if not re.match(r'^\d+$', clean_r): continue
+                        c_code, c_name = get_country_info(clean_r)
+                        if c_code not in country_map: country_map[c_code] = {"name": c_name, "hits": 0}
+                        country_map[c_code]["hits"] += r_data["hits"]
+                    
+                    top_countries = sorted(country_map.items(), key=lambda x: x[1]["hits"], reverse=True)[:15] # 🌟 Top 15 Countries
+                    
+                    cnt_kb = {"inline_keyboard": []}
+                    styles_c = ["primary", "success", "danger"]; style_idx_c = 0
+                    std_service = detect_service("", sid)
+                    rate = get_otp_reward(std_service)
+                    
+                    for c_code, c_data in top_countries:
+                        c_name_full = c_data["name"]
+                        parts = c_name_full.split(" ", 1)
+                        emoji_char = parts[0]
+                        clean_name = parts[1] if len(parts) > 1 else c_name_full
+                        
+                        btn_text = f"Other (+{c_code}) - {rate} TK" if "Other" in clean_name else f"{clean_name} (+{c_code}) - {rate} TK"
+                        btn = {"text": btn_text, "callback_data": f"cc_{safe_sid_short}_{c_code}", "style": styles_c[style_idx_c % 3]}
+                        if emoji_char in GLOBAL_BODY_EMOJIS: btn["icon_custom_emoji_id"] = GLOBAL_BODY_EMOJIS[emoji_char]
+                            
+                        cnt_kb["inline_keyboard"].append([btn])
+                        style_idx_c += 1
+                        
+                    cnt_kb["inline_keyboard"].append([{"text": "BACK", "callback_data": "back_to_services", "icon_custom_emoji_id": "5438541186539232243", "style": "danger"}])
+                    new_cnt_kb[safe_sid_short] = cnt_kb
+                    
+                cached_countries_kb = new_cnt_kb
+                
+            # --- 🌟 Leaderboard Caching ---
+            global cached_leaderboard_text, daily_user_otps
+            today = time.strftime("%Y-%m-%d")
+            if daily_user_otps.get("date") != today:
+                daily_user_otps["date"] = today
+                daily_user_otps["users"] = {}
+                
+            top_users = sorted(daily_user_otps["users"].items(), key=lambda x: x[1], reverse=True)[:5]
+            lb_msg = "<blockquote><tg-emoji emoji-id=\"5240021484516185513\">🏆</tg-emoji> <b>𝗧𝗢𝗣 𝟱 𝗟𝗘𝗔𝗗𝗘𝗥𝗕𝗢𝗔𝗥𝗗 (TODAY)</b></blockquote>\n━━━━━━━━━━━━━━━━━\n"
+            emoji_map = [("1️⃣", "5238176680098440792"), ("2️⃣", "5237806896299157399"), ("3️⃣", "5239965456667812809"), ("4️⃣", "5237911487342751418"), ("5️⃣", "5240278297790686165")]
+            
+            if not top_users: 
+                lb_msg += "<i>No OTPs received today.</i>\n"
+            else:
+                for idx, (uid_str, otp_count) in enumerate(top_users):
+                    u_data = get_user(int(uid_str))
+                    fname = u_data["first_name"] if u_data else "User"
+                    emoji_char, emoji_id = emoji_map[idx]
+                    lb_msg += f"<blockquote><tg-emoji emoji-id=\"{emoji_id}\">{emoji_char}</tg-emoji> <a href='tg://user?id={uid_str}'>{html.escape(str(fname))}</a> - {otp_count} OTP</blockquote>\n"
+            lb_msg += "━━━━━━━━━━━━━━━━━"
+            cached_leaderboard_text = lb_msg
+            
+        except Exception as e:
+            pass
+        time.sleep(5)
+
+# Admin Settings (DXA Control)
+bot_settings = {
+    "withdraw_on": True,
+    "min_withdraw": 10.0,
+    "support_link": "",
+    "w_group": "",
+    "auto_br_on": False,
+    "auto_br_interval": 60,
+    "cooldown": 5,
+    "num_req": 1,
+    "w_methods": ["bKash", "Nagad"],
+    "otp_default_rate": 0.15,
+    "otp_service_rates": {},
+    "main_channel_link": ""
+}
+
+BOT_DATA_FILE = "bot_data.json"
+USERS_LIST_FILE = "users_list.json"
+
+# ==========================================
+# Helper: Get Active Voltx Key & Rates
+# ==========================================
+def get_api_key():
+    return random.choice(voltx_keys) if voltx_keys else API_2OO9_KEY_DEFAULT
+
+def get_otp_reward(service_name):
+    rates = bot_settings.get("otp_service_rates", {})
+    val = rates.get(service_name, bot_settings.get("otp_default_rate", 0.5))
+    return float(val)
+
+def update_daily_stat(key, amount=1):
+    global daily_stats
+    today = time.strftime("%Y-%m-%d")
+    if daily_stats.get("date") != today:
+        daily_stats = {"date": today, "numbers": 0, "otps": 0}
+    daily_stats[key] = daily_stats.get(key, 0) + amount
+
+# ==========================================
+# Local Storage Managers
+# ==========================================
+def load_local_data():
+    global recent_traffic, voltx_dynamic_data, voltx_keys, force_join_status, force_join_channels
+    global voltx_auto_mode, otp_forward_groups, otp_button_link, recent_success_otps, bot_settings
+    global user_active_sessions, daily_stats, daily_user_otps, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
+    if os.path.exists(BOT_DATA_FILE):
+        try:
+            with open(BOT_DATA_FILE, "r") as f:
+                data = json.load(f)
+                recent_traffic = data.get("recent_traffic", [])
+                voltx_dynamic_data = data.get("voltx_dynamic_data", {})
+                loaded_keys = data.get("voltx_keys", [])
+                
+                if not loaded_keys:
+                    voltx_keys = [API_2OO9_KEY_DEFAULT]
+                else:
+                    voltx_keys = loaded_keys
+                    
+                force_join_status = data.get("force_join_status", False)
+                force_join_channels = data.get("force_join_channels", [])
+                voltx_auto_mode = data.get("voltx_auto_mode", True)
+                otp_forward_groups = data.get("otp_forward_groups", [])
+                otp_button_link = data.get("otp_button_link", "https://t.me/your_default_bot")
+                recent_success_otps = set(data.get("recent_success_otps", []))
+                
+                loaded_settings = data.get("bot_settings", {})
+                for k, v in loaded_settings.items(): bot_settings[k] = v
+                
+                daily_stats = data.get("daily_stats", {"date": "", "numbers": 0, "otps": 0})
+                daily_user_otps = data.get("daily_user_otps", {"date": "", "users": {}})
+                user_active_sessions = data.get("user_active_sessions", {})
+
+                # Load Custom Emoji Mappings
+                saved_body_emojis = data.get("custom_global_body_emojis", {})
+                for k, v in saved_body_emojis.items():
+                    GLOBAL_BODY_EMOJIS[k] = v
+                saved_app_emojis = data.get("custom_premium_apps", {})
+                for k, v in saved_app_emojis.items():
+                    if k in PREMIUM_APPS:
+                        PREMIUM_APPS[k].update(v)
+                    else:
+                        PREMIUM_APPS[k] = v
+        except Exception as e:
+            print(f"Error loading local data: {e}")
+
+def save_local_data():
+    global recent_traffic, voltx_dynamic_data, voltx_keys, force_join_status, force_join_channels
+    global voltx_auto_mode, otp_forward_groups, otp_button_link, recent_success_otps, bot_settings
+    global user_active_sessions, daily_stats, daily_user_otps, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
+    try:
+        with open(BOT_DATA_FILE, "w") as f:
+            json.dump({
+                "recent_traffic": recent_traffic, 
+                "voltx_dynamic_data": voltx_dynamic_data,
+                "voltx_keys": voltx_keys,
+                "force_join_status": force_join_status,
+                "force_join_channels": force_join_channels,
+                "voltx_auto_mode": voltx_auto_mode,
+                "otp_forward_groups": otp_forward_groups,
+                "otp_button_link": otp_button_link,
+                "recent_success_otps": list(recent_success_otps),
+                "bot_settings": bot_settings,
+                "user_active_sessions": user_active_sessions,
+                "daily_stats": daily_stats,
+                "daily_user_otps": daily_user_otps,
+                "custom_global_body_emojis": GLOBAL_BODY_EMOJIS,
+                "custom_premium_apps": PREMIUM_APPS
+            }, f)
+    except Exception as e:
+        print(f"Error saving local data: {e}")
+        
+    # 🌟 Firebase এ লাইভ আপডেট পাঠানো
+    if current_db_mode == "firebase" and db_firebase:
+        try:
+            db_firebase.collection('settings').document('bot_config').set({
+                "bot_settings": bot_settings,
+                "force_join_status": force_join_status,
+                "force_join_channels": force_join_channels,
+                "otp_forward_groups": otp_forward_groups,
+                "otp_button_link": otp_button_link,
+                "voltx_keys": voltx_keys,
+                "voltx_auto_mode": voltx_auto_mode,
+                "custom_global_body_emojis": GLOBAL_BODY_EMOJIS,
+                "custom_premium_apps": PREMIUM_APPS
+            }, merge=True)
+        except: pass
+
+cached_user_list = set()
+
+def add_to_broadcast_list(user_id):
+    global cached_user_list
+    if not cached_user_list and os.path.exists(USERS_LIST_FILE):
+        try:
+            with open(USERS_LIST_FILE, "r") as f:
+                cached_user_list = set(json.load(f))
+        except: pass
+        
+    if user_id not in cached_user_list:
+        cached_user_list.add(user_id)
+        try:
+            with open(USERS_LIST_FILE, "w") as f:
+                json.dump(list(cached_user_list), f)
+        except: pass
+
+def get_all_user_ids():
+    global user_cache
+    users = set()
+    
+    for uid in user_cache.keys():
+        users.add(int(uid))
+        
+    if os.path.exists(USERS_LIST_FILE):
+        try:
+            with open(USERS_LIST_FILE, "r") as f:
+                for u in json.load(f): users.add(int(u))
+        except: pass
+        
+    return list(users)
+
+# ==========================================
+# Telegram APIs & Force Join Helpers
+# ==========================================
+def get_bot_info():
+    try:
+        res = requests.get(BASE_URL + "getMe", timeout=10).json()
+        if res.get("ok"): return res["result"]["username"]
+    except Exception: pass
+    return ""
+
+def set_bot_commands():
+    commands = [{"command": "start", "description": "Start the bot or refresh menu"}]
+    try: requests.post(BASE_URL + "setMyCommands", json={"commands": commands}, timeout=10)
+    except Exception: pass
+
+def send_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
+    payload = {"chat_id": chat_id, "text": apply_emojis(text), "parse_mode": parse_mode}
+    if reply_markup: payload["reply_markup"] = reply_markup
+    try: return requests.post(BASE_URL + "sendMessage", json=payload, timeout=12).json()
+    except Exception: return None
+
+def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode="HTML"):
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": apply_emojis(text), "parse_mode": parse_mode}
+    if reply_markup: payload["reply_markup"] = reply_markup
+    try: requests.post(BASE_URL + "editMessageText", json=payload, timeout=12)
+    except Exception: pass
+
+def answer_callback_query(callback_query_id, text="", show_alert=False):
+    payload = {"callback_query_id": callback_query_id, "text": text, "show_alert": show_alert}
+    try: requests.post(BASE_URL + "answerCallbackQuery", json=payload, timeout=8)
+    except Exception: pass
+
+def delete_message(chat_id, message_id):
+    payload = {"chat_id": chat_id, "message_id": message_id}
+    try: requests.post(BASE_URL + "deleteMessage", json=payload, timeout=8)
+    except Exception: pass
+
+def copy_message(chat_id, from_chat_id, message_id, reply_markup=None):
+    payload = {"chat_id": chat_id, "from_chat_id": from_chat_id, "message_id": message_id}
+    if reply_markup: payload["reply_markup"] = reply_markup
+    try: return requests.post(BASE_URL + "copyMessage", json=payload, timeout=12).json()
+    except Exception: return None
+
+def get_chat_details(chat_identifier):
+    chat_identifier = str(chat_identifier).strip()
+    if chat_identifier.startswith("https://t.me/"):
+        chat_identifier = "@" + chat_identifier.split("/")[-1]
+    elif not chat_identifier.startswith("@") and not chat_identifier.startswith("-100"):
+        chat_identifier = "@" + chat_identifier
+        
+    url = BASE_URL + "getChat"
+    res = requests.get(url, params={"chat_id": chat_identifier}, timeout=10).json()
+    if res.get("ok"):
+        chat = res["result"]
+        chat_data = {
+            "id": chat["id"],
+            "username": "@" + chat["username"] if "username" in chat else "",
+            "title": chat.get("title", "Private Channel"),
+            "invite_link": chat.get("invite_link", "")
+        }
+        if not chat_data["invite_link"]:
+            inv_res = requests.post(BASE_URL + "exportChatInviteLink", json={"chat_id": chat["id"]}, timeout=10).json()
+            if inv_res.get("ok"):
+                chat_data["invite_link"] = inv_res["result"]
+        return chat_data
+    return None
+
+def is_user_joined(user_id):
+    if not force_join_status or not force_join_channels: return True
+    if user_id == ADMIN_ID: return True
+    
+    for ch in force_join_channels:
+        try:
+            res = requests.get(BASE_URL + "getChatMember", params={"chat_id": ch["id"], "user_id": user_id}, timeout=8).json()
+            if res.get("ok"):
+                status = res["result"]["status"]
+                if status in ["left", "kicked"]: return False
+            else:
+                return False
+        except: return False
+    return True
+
 # ==========================================
 # OTP Forwarding Pipeline 
 # ==========================================
-
 def detect_service(message_text, raw_sid=""):
     msg_lower = str(message_text).lower()
     sid_lower = str(raw_sid).lower()
@@ -621,7 +638,6 @@ def get_service_info_html(service_name):
     return f'<tg-emoji emoji-id="{emoji_id}">{normal_emoji}</tg-emoji> <b>{html.escape(short_name)}</b>', emoji_id
 
 def extract_otp_code(message_text):
-    # 🌟 স্পেস বা হাইফেনসহ ৩-৮ ডিজিটের কোড ধরার লজিক
     match = re.search(r'\b(\d{3}[\s-]?\d{3,4}|\d{4,8})\b', str(message_text))
     if match: return match.group(1)
     return "COPY"
@@ -644,7 +660,6 @@ def deliver_to_inbox(user_id, service_name, raw_number, msg_text, current_balanc
 
 def generate_otp_display(service_name, raw_number, message_text):
     c_code, c_name = get_country_info(raw_number)
-    
     parts = c_name.split(" ", 1)
     country_emoji = parts[0]
     
@@ -662,24 +677,18 @@ def generate_otp_display(service_name, raw_number, message_text):
     )
     
     otp = extract_otp_code(message_text)
-    
-    # 🌟 রেঞ্জ বের করার লজিক (ডিফল্ট ৫ ডিজিট)
     clean_range = str(raw_number)[:5] if len(str(raw_number)) >= 5 else str(raw_number)
     deep_link = f"https://t.me/{BOT_USERNAME}?start=alloc_{clean_range}_{service_name.lower()}"
     
     markup = {"inline_keyboard": []}
-    
-    # 🌟 প্রথম লাইন (CHANNEL এবং OTP)
     row1 = []
     main_channel_link = bot_settings.get("main_channel_link", "")
     if main_channel_link:
         row1.append({"text": "𝗖𝗛𝗔𝗡𝗡𝗘𝗟", "url": main_channel_link, "icon_custom_emoji_id": "5429353834881261942", "style": "primary"})
         
     row1.append({"text": f"{otp}", "icon_custom_emoji_id": srv_eid, "copy_text": {"text": otp}, "style": "success"})
-    
     markup["inline_keyboard"].append(row1)
     
-    # 🌟 দ্বিতীয় লাইন (GET NUMBER)
     markup["inline_keyboard"].append([
         {"text": "GET NUMBER", "url": deep_link, "icon_custom_emoji_id": "5429167978761461870", "style": "danger"}
     ])
@@ -785,7 +794,7 @@ def voltx_console_listener():
         time.sleep(10)
 
 def voltx_sms_listener():
-    global recent_success_otps, otp_forward_groups, user_active_sessions
+    global recent_success_otps, otp_forward_groups, user_active_sessions, daily_user_otps
     group_sent_otps = set() 
     while True:
         try:
@@ -821,14 +830,12 @@ def voltx_sms_listener():
                     sig = f"{raw_number}_{msg_text}"
                     detected_service = detect_service(msg_text, raw_service)
                     
-                    # 1. Forward to Groups (RAM only tracking - resets on restart)
                     if sig not in group_sent_otps:
                         group_sent_otps.add(sig)
                         if otp_forward_groups:
                             formatted_message, markup = generate_otp_display(detected_service, raw_number, msg_text)
                             send_otp_to_groups(formatted_message, markup)
                     
-                    # 2. Check Inbox Ownership (Strictly persistent tracking)
                     if sig not in recent_success_otps:
                         recent_success_otps.add(sig)
                         
@@ -844,7 +851,6 @@ def voltx_sms_listener():
                             reward = get_otp_reward(detected_service)
                             update_user_stats(owner_id, reward, 0)
                             
-                            # 🌟 ইনবক্সে মেসেজ পাঠানোর ফাংশন কল করা হলো
                             user_balance = get_user(owner_id).get("balance", 0.0)
                             deliver_to_inbox(owner_id, detected_service, raw_number, msg_text, user_balance, reward)
                             
@@ -910,7 +916,8 @@ def migrate_sqlite_to_firebase():
     except Exception as e: print(f"Migration Error: {e}")
 
 def init_firebase_from_file():
-    global current_db_mode, db_firebase, bot_settings, force_join_status, force_join_channels, otp_forward_groups, otp_button_link, voltx_keys, voltx_auto_mode
+    global current_db_mode, db_firebase, bot_settings, force_join_status, force_join_channels
+    global otp_forward_groups, otp_button_link, voltx_keys, voltx_auto_mode, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
     if os.path.exists("temp_firebase.json"):
         try:
             if not firebase_admin._apps: 
@@ -929,9 +936,10 @@ def init_firebase_from_file():
                 if "otp_button_link" in data: otp_button_link = data["otp_button_link"]
                 if "voltx_keys" in data: voltx_keys = data["voltx_keys"]
                 if "voltx_auto_mode" in data: voltx_auto_mode = data["voltx_auto_mode"]
-                print("✅ Settings synced from Firebase!")
+                if "custom_global_body_emojis" in data: GLOBAL_BODY_EMOJIS.update(data["custom_global_body_emojis"])
+                if "custom_premium_apps" in data: PREMIUM_APPS.update(data["custom_premium_apps"])
+                print("✅ Settings & Emojis synced from Firebase!")
 
-            # 🌟 One-Time Sync on Startup (বট চালু হওয়ার সময় অটো সিঙ্ক)
             try:
                 local_users = set()
                 if os.path.exists(USERS_LIST_FILE):
@@ -1004,10 +1012,10 @@ def update_user_stats(user_id, balance_add, invite_add):
     inv_add = int(invite_add)
     
     if user_id not in user_cache:
-        get_user(user_id) # Ensure user is loaded
+        get_user(user_id)
         
     if user_id in user_cache:
-        user_cache[user_id]["balance"] = round(user_cache[user_id]["balance"] + bal_add, 2) # 🌟 Fix: Round balance
+        user_cache[user_id]["balance"] = round(user_cache[user_id]["balance"] + bal_add, 2)
         user_cache[user_id]["total_invites"] += inv_add
         
     if current_db_mode == "firebase" and db_firebase:
@@ -1078,10 +1086,8 @@ def get_force_join_alert_keyboard():
         name = ch.get("title", ch.get("username", "Our Channel"))
         url = ch.get("invite_link", "")
         if not url and ch.get("username"): url = f"https://t.me/{ch['username'].replace('@', '')}"
-        # 🌟 Join বাটনে প্রিমিয়াম লিংক ইমোজি
         kb["inline_keyboard"].append([{"text": f"JOIN {name}", "url": url, "icon_custom_emoji_id": "5420517437885943844", "style": "danger"}])
     
-    # 🌟 Verify বাটনে প্রিমিয়াম টিকমার্ক ইমোজি
     kb["inline_keyboard"].append([{"text": "VERIFY", "callback_data": "check_fj_joined", "icon_custom_emoji_id": "5352694861990501856", "style": "success"}])
     return kb
 
@@ -1166,6 +1172,12 @@ def get_admin_inline_keyboard():
                     "callback_data": "dxa_control", 
                     "icon_custom_emoji_id": "5240451569656308978", 
                     "style": "danger"
+                },
+                {
+                    "text": "EMOJI MANAGER", 
+                    "callback_data": "manage_emojis", 
+                    "icon_custom_emoji_id": "5337267511261960341", 
+                    "style": "primary"
                 }
             ],
             [
@@ -1195,6 +1207,37 @@ def get_admin_inline_keyboard():
         ]
     }
 
+# ==========================================
+# Emoji Manager Keyboards (Admin Dynamic Editor)
+# ==========================================
+def get_emoji_manager_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "APP SERVICE EMOJIS", "callback_data": "emj_apps", "icon_custom_emoji_id": "5429503209548847635", "style": "primary"}],
+            [{"text": "SET ANY GLOBAL EMOJI", "callback_data": "emj_custom_global", "icon_custom_emoji_id": "5395444784611480792", "style": "success"}],
+            [{"text": "RESET ALL EMOJIS", "callback_data": "emj_reset_all", "icon_custom_emoji_id": "5422557736330106570", "style": "danger"}],
+            [{"text": "BACK", "callback_data": "back_to_admin", "icon_custom_emoji_id": "5267490665117275176", "style": "danger"}]
+        ]
+    }
+
+def get_apps_emoji_keyboard():
+    kb = {"inline_keyboard": []}
+    row = []
+    for app_name, app_info in PREMIUM_APPS.items():
+        row.append({
+            "text": f"{app_info['emoji']} {app_name}",
+            "callback_data": f"set_app_emj_{app_name}",
+            "icon_custom_emoji_id": app_info["id"],
+            "style": "primary"
+        })
+        if len(row) == 2:
+            kb["inline_keyboard"].append(row)
+            row = []
+    if row:
+        kb["inline_keyboard"].append(row)
+    kb["inline_keyboard"].append([{"text": "BACK", "callback_data": "manage_emojis", "icon_custom_emoji_id": "5267490665117275176", "style": "danger"}])
+    return kb
+
 def dxa_control_keyboard():
     grp = bot_settings.get("w_group", "")
     grp_status = grp if grp else "NOT SET"
@@ -1215,7 +1258,6 @@ def dxa_otp_control_keyboard():
         [{"text": "Set Service Rate", "icon_custom_emoji_id": "5395444784611480792", "callback_data": "dxa_srv_rate", "style": "success"}]
     ]}
     
-    # অ্যাড করা স্পেসিফিক সার্ভিস রেটগুলো ডায়নামিক ইনলাইন বাটন হিসেবে দেখানোর জন্য
     for srv_name, rate in bot_settings.get("otp_service_rates", {}).items():
         app_info = PREMIUM_APPS.get(srv_name, PREMIUM_APPS["Other"])
         kb["inline_keyboard"].append([{"text": f"Delete: {srv_name} ({rate})", "icon_custom_emoji_id": app_info["id"], "callback_data": f"del_srv_rate_{srv_name}", "style": "danger"}])
@@ -1301,7 +1343,7 @@ def get_live_traffic_content():
     sorted_services = sorted(service_counts.items(), key=lambda item: item[1]["count"], reverse=True)[:8]
 
     msg = "╔═════════════════╗\n║  <tg-emoji emoji-id=\"5352877703043258544\">📈</tg-emoji> <b>15M LIVE TRAFFIC</b>\n╚═════════════════╝\n"
-    fire_emoji_id = "5337267511261960341"
+    fire_emoji_id = GLOBAL_BODY_EMOJIS.get("🔥", "5337267511261960341")
     
     for i, (sid, data) in enumerate(sorted_services):
         msg += f"<tg-emoji emoji-id=\"{data['emoji_id']}\">{data['normal_emoji']}</tg-emoji> {html.escape(str(sid))} ➜ <tg-emoji emoji-id=\"{fire_emoji_id}\">🔥</tg-emoji> {data['count']} OTP\n"
@@ -1350,7 +1392,6 @@ def get_number_allocation_content(sid_short, c_code, user_id=None):
                 break
         best_ranges = target_ranges[:3]
             
-    # 🌟 এপিআই লিস্টে না থাকলেও লিংকের রেঞ্জ দিয়ে সরাসরি রিকোয়েস্ট করবে
     if not best_ranges: 
         best_ranges = [c_code]
         
@@ -1426,9 +1467,9 @@ def broadcast_worker(from_chat_id, message_id, target_msg_id):
 # Message Handlers
 # ==========================================
 def handle_message(message):
-    global waiting_for_firebase, current_db_mode, db_firebase, user_states, voltx_keys, force_join_channels, otp_forward_groups, otp_button_link, bot_settings
+    global waiting_for_firebase, current_db_mode, db_firebase, user_states, voltx_keys
+    global force_join_channels, otp_forward_groups, otp_button_link, bot_settings, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
     
-    # 🌟 বট শুধুমাত্র ইনবক্সের মেসেজে রিপ্লাই দিবে (গ্রুপ ইগনোর করবে)
     if message.get("chat", {}).get("type") != "private":
         return
         
@@ -1458,7 +1499,7 @@ def handle_message(message):
                 otp_forward_groups.clear() 
                 otp_forward_groups.append(str(shared_chat_id))
                 
-                inv_res = requests.post(BASE_URL + "exportChatInviteLink", json={"chat_id": shared_chat_id}).json()
+                inv_res = requests.post(BASE_URL + "exportChatInviteLink", json={"chat_id": shared_chat_id}, timeout=10).json()
                 if inv_res.get("ok"):
                     otp_button_link = inv_res["result"]
                 
@@ -1542,15 +1583,13 @@ def handle_message(message):
             
         elif state == "waiting_firebase":
             try:
-                # 🌟 ফাইল আপলোড সাপোর্ট অ্যাড করা হলো
                 if "document" in message:
                     file_id = message["document"]["file_id"]
-                    file_info = requests.get(BASE_URL + f"getFile?file_id={file_id}").json()
+                    file_info = requests.get(BASE_URL + f"getFile?file_id={file_id}", timeout=10).json()
                     file_path = file_info["result"]["file_path"]
                     file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                    text = requests.get(file_url).text
+                    text = requests.get(file_url, timeout=10).text
                 
-                # 🌟 স্মার্ট কোট (Smart Quotes) বা ভুল টেক্সট ফিক্স
                 text = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
                 firebase_cred = json.loads(text)
@@ -1561,14 +1600,12 @@ def handle_message(message):
                     current_db_mode = "firebase"
                     waiting_for_firebase = False
                     
-                    # 🌟 One-Time Sync: Firebase থেকে সব ইউজার ID লোকালে সেভ করা (লিমিট বাঁচাতে)
                     try:
                         local_users = set()
                         if os.path.exists(USERS_LIST_FILE):
                             with open(USERS_LIST_FILE, "r") as f:
                                 local_users = set(json.load(f))
                         
-                        # শুধুমাত্র ID গুলো আনা হচ্ছে, পুরো ডাটা নয় (এতে ব্যান্ডউইথ ও লিমিট বাঁচবে)
                         docs = db_firebase.collection('users').select([]).stream()
                         fb_users = set(int(doc.id) for doc in docs)
                         
@@ -1580,7 +1617,6 @@ def handle_message(message):
                     except Exception as e:
                         print(f"User Sync Error: {e}")
 
-                    # 🌟 Firebase এ সেটিংস চেক এবং সেভ/সিঙ্ক করার লজিক
                     try:
                         config_ref = db_firebase.collection('settings').document('bot_config')
                         doc = config_ref.get()
@@ -1592,7 +1628,9 @@ def handle_message(message):
                                 "otp_forward_groups": otp_forward_groups,
                                 "otp_button_link": otp_button_link,
                                 "voltx_keys": voltx_keys,
-                                "voltx_auto_mode": voltx_auto_mode
+                                "voltx_auto_mode": voltx_auto_mode,
+                                "custom_global_body_emojis": GLOBAL_BODY_EMOJIS,
+                                "custom_premium_apps": PREMIUM_APPS
                             }
                             config_ref.set(config_data)
                         else:
@@ -1604,6 +1642,8 @@ def handle_message(message):
                             if "otp_button_link" in data: otp_button_link = data["otp_button_link"]
                             if "voltx_keys" in data: voltx_keys = data["voltx_keys"]
                             if "voltx_auto_mode" in data: voltx_auto_mode = data["voltx_auto_mode"]
+                            if "custom_global_body_emojis" in data: GLOBAL_BODY_EMOJIS.update(data["custom_global_body_emojis"])
+                            if "custom_premium_apps" in data: PREMIUM_APPS.update(data["custom_premium_apps"])
                             save_local_data()
                     except Exception as e:
                         pass
@@ -1617,6 +1657,41 @@ def handle_message(message):
                     if target_msg_id: edit_message(chat_id, target_msg_id, f"❌ <b>Failed to connect to Firebase:</b>\n<code>{html.escape(str(e))}</code>", reply_markup=get_back_only_keyboard())
             except Exception:
                 if target_msg_id: edit_message(chat_id, target_msg_id, "⚠️ <b>Invalid JSON format. Please upload the .json file directly.</b>", reply_markup=get_back_only_keyboard())
+            del user_states[user_id]
+            delete_message(chat_id, message_id)
+            return
+
+        # 🌟 Emoji Setting States
+        elif isinstance(state, str) and state.startswith("waiting_app_emj_id_"):
+            target_app = state[19:]
+            clean_eid = text.strip()
+            if re.match(r'^\d+$', clean_eid):
+                if target_app in PREMIUM_APPS:
+                    PREMIUM_APPS[target_app]["id"] = clean_eid
+                    save_local_data()
+                    if target_msg_id: edit_message(chat_id, target_msg_id, f"✅ <b>Emoji ID updated for {target_app}!</b>", reply_markup=get_apps_emoji_keyboard())
+            else:
+                if target_msg_id: edit_message(chat_id, target_msg_id, "❌ <b>Invalid Emoji ID! Must be digits only.</b>", reply_markup=get_back_only_keyboard())
+            del user_states[user_id]
+            delete_message(chat_id, message_id)
+            return
+
+        elif state == "waiting_custom_global_emj":
+            try:
+                parts = text.strip().split()
+                if len(parts) >= 2:
+                    emj_char = parts[0]
+                    emj_id = parts[1]
+                    if re.match(r'^\d+$', emj_id):
+                        GLOBAL_BODY_EMOJIS[emj_char] = emj_id
+                        save_local_data()
+                        if target_msg_id: edit_message(chat_id, target_msg_id, f"✅ <b>Emoji ID set:</b> {emj_char} ➜ <code>{emj_id}</code>", reply_markup=get_emoji_manager_keyboard())
+                    else:
+                        if target_msg_id: edit_message(chat_id, target_msg_id, "❌ <b>ID must be numbers only.</b>", reply_markup=get_back_only_keyboard())
+                else:
+                    if target_msg_id: edit_message(chat_id, target_msg_id, "❌ <b>Invalid format! Example: 🔥 5337267511261960341</b>", reply_markup=get_back_only_keyboard())
+            except Exception:
+                if target_msg_id: edit_message(chat_id, target_msg_id, "❌ <b>Failed to parse input!</b>", reply_markup=get_back_only_keyboard())
             del user_states[user_id]
             delete_message(chat_id, message_id)
             return
@@ -1833,9 +1908,7 @@ def handle_message(message):
     if text in ["𝗚𝗘𝗧 𝗡𝗨𝗠𝗕𝗘𝗥", "𝗖𝗛𝗘𝗖𝗞 𝗧𝗥𝗔𝗙𝗙𝗜𝗖", "𝗜𝗡𝗩𝗜𝗧𝗘 𝗙𝗥𝗜𝗘𝗡𝗗", "𝗕𝗔𝗟𝗔𝗡𝗖𝗘", "𝗟𝗘𝗔𝗗𝗘𝗥𝗕𝗢𝗔𝗥𝗗", "𝗢𝗪𝗡𝗘𝗥 𝗣𝗔𝗡𝗘𝗟"]:
         if user_id in user_states: del user_states[user_id]
 
-    # 🌟 চেক করা হচ্ছে ইউজার আগে থেকেই ডাটাবেসে আছে কি না
     is_new_user = (get_user(user_id) is None)
-
     add_user(user_id, first_name)
     user_data = get_user(user_id)
 
@@ -1854,12 +1927,9 @@ def handle_message(message):
                         return
                     user_cooldowns[user_id] = now
                     
-                    # 🌟 মেসেজ পাঠিয়ে মেসেজ আইডি ক্যাচ করা
                     wait_msg = send_message(chat_id, f"⏳ <b>Fetching number for {req_sid.title().replace('_', ' ')}...</b>")
-                    
                     msg, markup = get_number_allocation_content(req_sid, req_range, user_id=user_id)
                     
-                    # 🌟 নতুন মেসেজ না দিয়ে আগেরটাতেই এডিট করা
                     if wait_msg and "result" in wait_msg:
                         edit_message(chat_id, wait_msg["result"]["message_id"], msg, reply_markup=markup)
                     else:
@@ -1870,7 +1940,6 @@ def handle_message(message):
             else:
                 try:
                     inviter_id = int(param)
-                    # 🌟 শুধুমাত্র নতুন ইউজার হলেই রেফারেল কাউন্ট হবে!
                     if is_new_user and inviter_id != user_id and get_user(inviter_id):
                         ref_amount = bot_settings.get("refer_reward", 0.2)
                         update_user_stats(inviter_id, ref_amount, 1)
@@ -1933,7 +2002,8 @@ def handle_message(message):
             send_message(chat_id, "⚠️ <b>Access Denied!</b>\nThis menu is restricted to the admin.")
 
 def handle_callback(callback_query):
-    global user_states, voltx_auto_mode, current_db_mode, force_join_status, force_join_channels, voltx_keys, otp_forward_groups, bot_settings
+    global user_states, voltx_auto_mode, current_db_mode, force_join_status, force_join_channels, voltx_keys
+    global otp_forward_groups, bot_settings, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
     query_id = callback_query["id"]
     user_id = callback_query["from"]["id"]
     data = callback_query["data"]
@@ -1989,7 +2059,6 @@ def handle_callback(callback_query):
         edit_message(chat_id, message_id, f"⏳ <b>Fetching best top range and allocating number...</b>")
         
         msg, markup = get_number_allocation_content(sid_short, c_code, user_id=user_id)
-        
         edit_message(chat_id, message_id, msg, reply_markup=markup)
         return
 
@@ -2026,10 +2095,6 @@ def handle_callback(callback_query):
         return
         
     if data.startswith("admin_w_approve_") or data.startswith("admin_w_reject_"):
-        if user_id != ADMIN_ID:
-            answer_callback_query(query_id, "⚠️ Access Denied! You cannot perform this action.", show_alert=True)
-            return
-
         parts = data.split("_")
         action = parts[2]
         req_user_id = int(parts[3])
@@ -2234,6 +2299,30 @@ def handle_callback(callback_query):
         send_message(chat_id, "👇 <b>Select Withdraw Group from below:</b>", reply_markup=select_kb)
         answer_callback_query(query_id)
 
+    # ===== Dynamic Emoji Manager Callbacks =====
+    elif data == "manage_emojis":
+        edit_message(chat_id, message_id, "🎨 <b>CUSTOM EMOJI MANAGER</b>\nConfigure Telegram Custom Emoji IDs dynamically:", reply_markup=get_emoji_manager_keyboard())
+        answer_callback_query(query_id)
+    elif data == "emj_apps":
+        edit_message(chat_id, message_id, "📱 <b>Select an App Service to update its Telegram Custom Emoji ID:</b>", reply_markup=get_apps_emoji_keyboard())
+        answer_callback_query(query_id)
+    elif data.startswith("set_app_emj_"):
+        app_name = data[12:]
+        user_states[user_id] = {"state": f"waiting_app_emj_id_{app_name}", "msg_id": message_id}
+        current_id = PREMIUM_APPS.get(app_name, {}).get("id", "None")
+        edit_message(chat_id, message_id, f"🎨 <b>Changing Emoji ID for: {app_name}</b>\n\n📌 <b>Current ID:</b> <code>{current_id}</code>\n\n💬 <b>Reply with the new Custom Emoji ID (Digits only):</b>", reply_markup=get_back_only_keyboard())
+        answer_callback_query(query_id)
+    elif data == "emj_custom_global":
+        user_states[user_id] = {"state": "waiting_custom_global_emj", "msg_id": message_id}
+        edit_message(chat_id, message_id, "✨ <b>Set Any Character/Flag/Body Emoji ID</b>\n\nFormat: <code>Emoji ID</code>\nExample: <code>🔥 5337267511261960341</code> or <code>🇧🇩 5911365056594973179</code>\n\n💬 <b>Send your emoji and new ID separated by a space:</b>", reply_markup=get_back_only_keyboard())
+        answer_callback_query(query_id)
+    elif data == "emj_reset_all":
+        GLOBAL_BODY_EMOJIS = dict(DEFAULT_GLOBAL_BODY_EMOJIS)
+        PREMIUM_APPS = {k: dict(v) for k, v in DEFAULT_PREMIUM_APPS.items()}
+        save_local_data()
+        edit_message(chat_id, message_id, "✅ <b>All Emoji IDs have been reset to factory defaults!</b>", reply_markup=get_emoji_manager_keyboard())
+        answer_callback_query(query_id, "Emojis Reset!")
+
     # ===== Broadcast System =====
     elif data == "broadcast_menu":
         user_states[user_id] = {"state": "waiting_broadcast", "msg_id": message_id}
@@ -2278,11 +2367,31 @@ def handle_callback(callback_query):
         answer_callback_query(query_id, f"{data} clicked!", show_alert=True)
 
 # ==========================================
+# Render Port Binding Helper
+# ==========================================
+class DummyServerHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+    def log_message(self, format, *args):
+        return
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), DummyServerHandler)
+    server.serve_forever()
+
+# ==========================================
 # Main
 # ==========================================
 def main():
     global BOT_USERNAME
     
+    # 🌟 Render Free Web Service Port Binding Thread
+    threading.Thread(target=run_http_server, daemon=True).start()
+
     load_local_data()
     init_sqlite()
     init_firebase_from_file()
@@ -2294,13 +2403,13 @@ def main():
     threading.Thread(target=voltx_sms_listener, daemon=True).start()
     threading.Thread(target=auto_cache_menu_thread, daemon=True).start()
     
-    print(f"Bot @{BOT_USERNAME} is running with Voltx, DXA Control & OTP Forwarding...")
+    print(f"Bot @{BOT_USERNAME} is running with Voltx, DXA Control, Emoji Manager & OTP Forwarding...")
     
     offset = None
     while True:
         try:
             url = BASE_URL + "getUpdates"
-            res = requests.get(url, params={"timeout": 30, "offset": offset}).json()
+            res = requests.get(url, params={"timeout": 30, "offset": offset}, timeout=35).json()
             if res.get("ok"):
                 for update in res["result"]:
                     offset = update["update_id"] + 1
