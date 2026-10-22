@@ -55,7 +55,7 @@ recent_success_otps = set()
 
 voltx_dynamic_data = {}
 recent_traffic = []
-daily_stats = {"date": "", "numbers": 0, "otps": 0}  # Daily Stats Tracker
+daily_stats = {"date": "", "numbers": 0, "otps": 0}
 daily_user_otps = {"date": "", "users": {}}
 
 # Caching Variables
@@ -431,7 +431,7 @@ SERVICE_SMS_KEYWORDS = {
 }
 
 # ==========================================
-# Complete & Conflict-Free Dialing Codes
+# Dialing Codes
 # ==========================================
 COUNTRY_CODES = {
     "1242": "🇧🇸 Bahamas",
@@ -663,7 +663,6 @@ def get_country_info(range_str):
   return clean_range[:3], f"🏳️ Other (+{clean_range[:3]})"
 
 
-# Admin Settings
 bot_settings = {
     "withdraw_on": True,
     "min_withdraw": 10.0,
@@ -800,7 +799,7 @@ def save_local_data():
           },
           merge=True,
       )
-    except:
+    except Exception:
       pass
 
 
@@ -813,7 +812,7 @@ def add_to_broadcast_list(user_id):
     try:
       with open(USERS_LIST_FILE, "r") as f:
         cached_user_list = set(json.load(f))
-    except:
+    except Exception:
       pass
 
   if user_id not in cached_user_list:
@@ -821,7 +820,7 @@ def add_to_broadcast_list(user_id):
     try:
       with open(USERS_LIST_FILE, "w") as f:
         json.dump(list(cached_user_list), f)
-    except:
+    except Exception:
       pass
 
 
@@ -835,7 +834,7 @@ def get_all_user_ids():
       with open(USERS_LIST_FILE, "r") as f:
         for u in json.load(f):
           users.add(int(u))
-    except:
+    except Exception:
       pass
   return list(users)
 
@@ -941,26 +940,29 @@ def get_chat_details(chat_identifier):
     chat_identifier = "@" + chat_identifier
 
   url = BASE_URL + "getChat"
-  res = requests.get(
-      url, params={"chat_id": chat_identifier}, timeout=10
-  ).json()
-  if res.get("ok"):
-    chat = res["result"]
-    chat_data = {
-        "id": chat["id"],
-        "username": "@" + chat["username"] if "username" in chat else "",
-        "title": chat.get("title", "Private Channel"),
-        "invite_link": chat.get("invite_link", ""),
-    }
-    if not chat_data["invite_link"]:
-      inv_res = requests.post(
-          BASE_URL + "exportChatInviteLink",
-          json={"chat_id": chat["id"]},
-          timeout=10,
-      ).json()
-      if inv_res.get("ok"):
-        chat_data["invite_link"] = inv_res["result"]
-    return chat_data
+  try:
+    res = requests.get(
+        url, params={"chat_id": chat_identifier}, timeout=10
+    ).json()
+    if res.get("ok"):
+      chat = res["result"]
+      chat_data = {
+          "id": chat["id"],
+          "username": "@" + chat["username"] if "username" in chat else "",
+          "title": chat.get("title", "Private Channel"),
+          "invite_link": chat.get("invite_link", ""),
+      }
+      if not chat_data["invite_link"]:
+        inv_res = requests.post(
+            BASE_URL + "exportChatInviteLink",
+            json={"chat_id": chat["id"]},
+            timeout=10,
+        ).json()
+        if inv_res.get("ok"):
+          chat_data["invite_link"] = inv_res["result"]
+      return chat_data
+  except Exception:
+    pass
   return None
 
 
@@ -983,7 +985,7 @@ def is_user_joined(user_id):
           return False
       else:
         return False
-    except:
+    except Exception:
       return False
   return True
 
@@ -1130,7 +1132,6 @@ def send_otp_to_groups(formatted_text, markup):
 # Dual API Fetching Helpers: 2oo9 (Voltx) & MK Network
 # ========================================================
 def fetch_live_access():
-  # 1. First attempt MK Network access_list
   try:
     headers = {"mknetwork-key": get_mk_api_key()}
     res = requests.get(
@@ -1140,7 +1141,6 @@ def fetch_live_access():
       mk_data = res.json()
       items = mk_data.get("data", {}).get("items", [])
       if items:
-        # Group by detected service / country
         services = []
         for item in items:
           rng = item.get("range", "")
@@ -1149,7 +1149,6 @@ def fetch_live_access():
   except Exception:
     pass
 
-  # 2. Voltx 2oo9 fallback
   headers = {"mauthapi": get_api_key()}
   try:
     res = requests.get(
@@ -1158,14 +1157,13 @@ def fetch_live_access():
     data = res.json()
     if data.get("meta", {}).get("code") == 200:
       return data.get("data", {}).get("services", [])
-  except:
+  except Exception:
     pass
   return []
 
 
 def fetch_live_number(rid, user_id=None, service_name="Other"):
   global pending_mk_requests
-  # 1. Try MK Network v3 /getnum/number[span_6](start_span)[span_6](end_span)
   try:
     mk_headers = {
         "mknetwork-key": get_mk_api_key(),
@@ -1200,7 +1198,6 @@ def fetch_live_number(rid, user_id=None, service_name="Other"):
   except Exception:
     pass
 
-  # 2. Fallback to 2oo9 Voltx /getnum
   headers = {"mauthapi": get_api_key(), "Content-Type": "application/json"}
   payload = {"rid": str(rid)}
   try:
@@ -1210,7 +1207,7 @@ def fetch_live_number(rid, user_id=None, service_name="Other"):
     data = res.json()
     if data.get("meta", {}).get("code") == 200:
       return data.get("data", {})
-  except:
+  except Exception:
     pass
   return None
 
@@ -1225,7 +1222,6 @@ def voltx_console_listener():
     current_time = int(time.time())
     new_traffic, seen_signatures = [], set()
 
-    # 1. Check MK Network Radar[span_7](start_span)[span_7](end_span)
     try:
       headers = {"mknetwork-key": get_mk_api_key()}
       res = requests.get(
@@ -1271,7 +1267,6 @@ def voltx_console_listener():
     except Exception:
       pass
 
-    # 2. Check 2oo9 Voltx Console
     try:
       headers = {"mauthapi": get_api_key()}
       res = requests.get(f"{API_2OO9_BASE}/console", headers=headers, timeout=10)
@@ -1345,7 +1340,7 @@ def voltx_console_listener():
 
 
 # ========================================================
-# MK Network Batch Status Poller Thread (/check/status)
+# MK Network Status Poller Thread (/check/status)
 # ========================================================
 def mk_status_poller_thread():
   global pending_mk_requests, recent_success_otps, otp_forward_groups, user_active_sessions, daily_user_otps
@@ -1353,7 +1348,6 @@ def mk_status_poller_thread():
     try:
       if pending_mk_requests:
         now = time.time()
-        # Drop requests older than 15 mins (900s)[span_8](start_span)[span_8](end_span)
         expired_ids = [
             req_id
             for req_id, meta in pending_mk_requests.items()
@@ -1362,13 +1356,13 @@ def mk_status_poller_thread():
         for exp_id in expired_ids:
           del pending_mk_requests[exp_id]
 
-        active_req_ids = [int(k) for k in list(pending_mk_requests.keys())[:100]][span_9](start_span)[span_9](end_span)
+        active_req_ids = [int(k) for k in list(pending_mk_requests.keys())[:100]]
         if active_req_ids:
           headers = {
               "mknetwork-key": get_mk_api_key(),
               "Content-Type": "application/json",
           }
-          payload = {"request_ids": active_req_ids}[span_10](start_span)[span_10](end_span)
+          payload = {"request_ids": active_req_ids}
           res = requests.post(
               f"{API_MK_BASE}/check/status",
               headers=headers,
@@ -1377,16 +1371,16 @@ def mk_status_poller_thread():
           )
           if res.status_code == 200:
             res_data = res.json().get("data", {})
-            results = res_data.get("results", [])[span_11](start_span)[span_11](end_span)[span_12](start_span)[span_12](end_span)
+            results = res_data.get("results", [])
 
             for r in results:
               r_id_str = str(r.get("request_id"))
-              status = r.get("status")[span_13](start_span)[span_13](end_span)
-              if status == "success":[span_14](start_span)[span_14](end_span)
-                full_sms = r.get("full_sms", "")[span_15](start_span)[span_15](end_span)
-                otp_code = r.get("otp_code", "")[span_16](start_span)[span_16](end_span)
+              status = r.get("status")
+              if status == "success":
+                full_sms = r.get("full_sms", "")
+                otp_code = r.get("otp_code", "")
                 msg_text = full_sms if full_sms else f"OTP: {otp_code}"
-                raw_number = r.get("number", "")[span_17](start_span)[span_17](end_span)
+                raw_number = r.get("number", "")
 
                 req_meta = pending_mk_requests.pop(r_id_str, None)
                 if not req_meta:
@@ -1430,7 +1424,7 @@ def mk_status_poller_thread():
                   update_daily_stat("otps", 1)
                   save_local_data()
 
-              elif status in ["expired", "not_found"]:[span_18](start_span)[span_18](end_span)
+              elif status in ["expired", "not_found"]:
                 pending_mk_requests.pop(r_id_str, None)
 
             save_local_data()
@@ -2602,7 +2596,6 @@ def get_number_allocation_content(sid_short, c_code, user_id=None):
 
   for _ in range(req_count):
     selected_rid = random.choice(best_ranges)
-    # Dual number fetch from MK Network or Voltx
     num_data = fetch_live_number(selected_rid, user_id=user_id, service_name=full_sid)
     if num_data:
       full_number = html.escape(str(num_data.get("full_number", "")))
@@ -2685,7 +2678,7 @@ def broadcast_worker(from_chat_id, message_id, target_msg_id):
       if res and res.get("ok"):
         success_count += 1
       time.sleep(0.05)
-    except:
+    except Exception:
       pass
 
   send_message(
@@ -2748,13 +2741,16 @@ def handle_message(message):
         otp_forward_groups.clear()
         otp_forward_groups.append(str(shared_chat_id))
 
-        inv_res = requests.post(
-            BASE_URL + "exportChatInviteLink",
-            json={"chat_id": shared_chat_id},
-            timeout=10,
-        ).json()
-        if inv_res.get("ok"):
-          otp_button_link = inv_res["result"]
+        try:
+          inv_res = requests.post(
+              BASE_URL + "exportChatInviteLink",
+              json={"chat_id": shared_chat_id},
+              timeout=10,
+          ).json()
+          if inv_res.get("ok"):
+            otp_button_link = inv_res["result"]
+        except Exception:
+          pass
 
         save_local_data()
         if target_msg_id:
@@ -3001,7 +2997,7 @@ def handle_message(message):
               if "custom_premium_apps" in data:
                 PREMIUM_APPS.update(data["custom_premium_apps"])
               save_local_data()
-          except Exception as e:
+          except Exception:
             pass
 
           if target_msg_id:
@@ -4462,7 +4458,7 @@ def main():
             threading.Thread(
                 target=handle_callback, args=(update["callback_query"],)
             ).start()
-    except Exception as e:
+    except Exception:
       time.sleep(3)
 
 
