@@ -23,6 +23,10 @@ BOT_USERNAME = ""
 API_2OO9_BASE = "https://api.2oo9.cloud/MXS47FLFX0U/tness/@public/api"
 API_2OO9_KEY_DEFAULT = "M4DDE8HGFJ9"
 
+# MK Network API Configuration (v3 API)
+API_MK_BASE = "https://mknetworkbd.com/api/v3/public"
+API_MK_KEY_DEFAULT = "6571fd6f0646d688007918e9"
+
 # Global states
 current_db_mode = "sqlite"
 db_firebase = None
@@ -34,11 +38,15 @@ user_cache = {}
 user_active_sessions = {}  # format: {"number": user_id}
 user_cooldowns = {}
 
-# Voltx Auto System States
+# Voltx / MK Network Auto System States
 voltx_auto_mode = True
 voltx_keys = [API_2OO9_KEY_DEFAULT]
+mk_keys = [API_MK_KEY_DEFAULT]
 force_join_status = False
 force_join_channels = []
+
+# Pending allocations for polling: {request_id: {"user_id": uid, "service": srv, "created_at": ts}}
+pending_mk_requests = {}
 
 # OTP Forwarding States
 otp_forward_groups = []
@@ -47,10 +55,10 @@ recent_success_otps = set()
 
 voltx_dynamic_data = {}
 recent_traffic = []
-daily_stats = {"date": "", "numbers": 0, "otps": 0}  # 🌟 Daily Stats Tracker
+daily_stats = {"date": "", "numbers": 0, "otps": 0}  # Daily Stats Tracker
 daily_user_otps = {"date": "", "users": {}}
 
-# 🌟 Caching Variables for Rocket Speed!
+# Caching Variables
 cached_services_kb = None
 cached_countries_kb = {}
 cached_leaderboard_text = ""
@@ -59,7 +67,6 @@ cached_leaderboard_text = ""
 # Global Emojis Map & Premium Apps Setup
 # ==========================================
 DEFAULT_GLOBAL_BODY_EMOJIS = {
-    # System & Interface Icons
     "➖": "5870818207383686839",
     "🚫": "5334807341109908955",
     "😒": "5334763399299506604",
@@ -152,7 +159,6 @@ DEFAULT_GLOBAL_BODY_EMOJIS = {
     "💵": "5429612421977253466",
     "👑": "5352838545826420397",
     "↳": "5420618897898381296",
-    # 🌟 Real Custom Emoji IDs from Screen Captures
     "🇦🇪": "5294314831824835370",
     "🇦🇫": "5291937511591925566",
     "🇦🇬": "5294005972136647964",
@@ -428,7 +434,6 @@ SERVICE_SMS_KEYWORDS = {
 # Complete & Conflict-Free Dialing Codes
 # ==========================================
 COUNTRY_CODES = {
-    # 🌟 NANP (+1) Caribbean & Islands (Longest matches first)
     "1242": "🇧🇸 Bahamas",
     "1246": "🇧🇧 Barbados",
     "1264": "🇦🇮 Anguilla",
@@ -456,11 +461,9 @@ COUNTRY_CODES = {
     "1869": "🇰🇳 Saint Kitts and Nevis",
     "1876": "🇯🇲 Jamaica",
     "1": "🇺🇸 USA / 🇨🇦 Canada",
-    # 🌟 +7 Eurasia Zone
     "76": "🇰🇿 Kazakhstan",
     "77": "🇰🇿 Kazakhstan",
     "7": "🇷🇺 Russia",
-    # 🌟 Asia & Middle East
     "880": "🇧🇩 Bangladesh",
     "91": "🇮🇳 India",
     "92": "🇵🇰 Pakistan",
@@ -501,7 +504,6 @@ COUNTRY_CODES = {
     "973": "🇧🇭 Bahrain",
     "968": "🇴🇲 Oman",
     "967": "🇾🇪 Yemen",
-    # 🌟 Central Asia & Caucasus
     "90": "🇹🇷 Turkey",
     "994": "🇦🇿 Azerbaijan",
     "995": "🇬🇪 Georgia",
@@ -511,7 +513,6 @@ COUNTRY_CODES = {
     "992": "🇹🇯 Tajikistan",
     "993": "🇹🇲 Turkmenistan",
     "976": "🇲🇳 Mongolia",
-    # 🌟 Europe
     "44": "🇬🇧 United Kingdom",
     "49": "🇩🇪 Germany",
     "33": "🇫🇷 France",
@@ -558,7 +559,6 @@ COUNTRY_CODES = {
     "423": "🇱🇮 Liechtenstein",
     "352": "🇱🇺 Luxembourg",
     "350": "🇬🇮 Gibraltar",
-    # 🌟 Africa
     "20": "🇪🇬 Egypt",
     "212": "🇲🇦 Morocco",
     "213": "🇩🇿 Algeria",
@@ -613,7 +613,6 @@ COUNTRY_CODES = {
     "266": "🇱🇸 Lesotho",
     "268": "🇸🇿 Eswatini",
     "265": "🇲🇼 Malawi",
-    # 🌟 Americas
     "52": "🇲🇽 Mexico",
     "55": "🇧🇷 Brazil",
     "54": "🇦🇷 Argentina",
@@ -636,7 +635,6 @@ COUNTRY_CODES = {
     "501": "🇧🇿 Belize",
     "53": "🇨🇺 Cuba",
     "509": "🇭🇹 Haiti",
-    # 🌟 Oceania & Pacific
     "61": "🇦🇺 Australia",
     "64": "🇳🇿 New Zealand",
     "675": "🇵🇬 Papua New Guinea",
@@ -656,7 +654,7 @@ COUNTRY_CODES = {
 
 
 def get_country_info(range_str):
-  clean_range = str(range_str or "").replace("X", "")
+  clean_range = str(range_str or "").replace("X", "").replace("x", "")
   for code, name in sorted(
       COUNTRY_CODES.items(), key=lambda x: len(x[0]), reverse=True
   ):
@@ -665,148 +663,7 @@ def get_country_info(range_str):
   return clean_range[:3], f"🏳️ Other (+{clean_range[:3]})"
 
 
-def auto_cache_menu_thread():
-  global cached_services_kb, cached_countries_kb, voltx_auto_mode, voltx_dynamic_data
-  while True:
-    try:
-      if voltx_auto_mode and voltx_dynamic_data:
-        service_hits = [
-            (
-                sid,
-                s_data,
-                sum(r["hits"] for r in s_data["ranges"].values()),
-            )
-            for sid, s_data in voltx_dynamic_data.items()
-        ]
-        top_services = sorted(service_hits, key=lambda x: x[2], reverse=True)[
-            :15
-        ]
-
-        new_srv_kb = {"inline_keyboard": []}
-        row = []
-        styles = ["primary", "success", "danger"]
-        style_idx = 0
-        for sid, data, hits in top_services:
-          safe_sid = html.escape(str(sid))
-          row.append({
-              "text": safe_sid,
-              "callback_data": f"srv_{safe_sid[:15]}",
-              "style": styles[style_idx % 3],
-              "icon_custom_emoji_id": data["emoji_id"],
-          })
-          style_idx += 1
-          if len(row) == 2:
-            new_srv_kb["inline_keyboard"].append(row)
-            row = []
-        if row:
-          new_srv_kb["inline_keyboard"].append(row)
-        new_srv_kb["inline_keyboard"].append([{
-            "text": "CLOSE",
-            "callback_data": "close_panel",
-            "icon_custom_emoji_id": "5438541186539232243",
-            "style": "danger",
-        }])
-
-        cached_services_kb = new_srv_kb
-
-        new_cnt_kb = {}
-        for sid, data, hits in top_services:
-          safe_sid_short = html.escape(str(sid))[:15]
-          country_map = {}
-          for r, r_data in data["ranges"].items():
-            clean_r = str(r).replace("X", "")
-            if not re.match(r"^\d+$", clean_r):
-              continue
-            c_code, c_name = get_country_info(clean_r)
-            if c_code not in country_map:
-              country_map[c_code] = {"name": c_name, "hits": 0}
-            country_map[c_code]["hits"] += r_data["hits"]
-
-          top_countries = sorted(
-              country_map.items(), key=lambda x: x[1]["hits"], reverse=True
-          )[:15]
-
-          cnt_kb = {"inline_keyboard": []}
-          styles_c = ["primary", "success", "danger"]
-          style_idx_c = 0
-          std_service = detect_service("", sid)
-          rate = get_otp_reward(std_service)
-
-          for c_code, c_data in top_countries:
-            c_name_full = c_data["name"]
-            parts = c_name_full.split(" ", 1)
-            emoji_char = parts[0]
-            clean_name = parts[1] if len(parts) > 1 else c_name_full
-
-            btn_text = (
-                f"Other (+{c_code}) - {rate} TK"
-                if "Other" in clean_name
-                else f"{clean_name} (+{c_code}) - {rate} TK"
-            )
-            btn = {
-                "text": btn_text,
-                "callback_data": f"cc_{safe_sid_short}_{c_code}",
-                "style": styles_c[style_idx_c % 3],
-            }
-            if emoji_char in GLOBAL_BODY_EMOJIS:
-              btn["icon_custom_emoji_id"] = GLOBAL_BODY_EMOJIS[emoji_char]
-
-            cnt_kb["inline_keyboard"].append([btn])
-            style_idx_c += 1
-
-          cnt_kb["inline_keyboard"].append([{
-              "text": "BACK",
-              "callback_data": "back_to_services",
-              "icon_custom_emoji_id": "5438541186539232243",
-              "style": "danger",
-          }])
-          new_cnt_kb[safe_sid_short] = cnt_kb
-
-        cached_countries_kb = new_cnt_kb
-
-      global cached_leaderboard_text, daily_user_otps
-      today = time.strftime("%Y-%m-%d")
-      if daily_user_otps.get("date") != today:
-        daily_user_otps["date"] = today
-        daily_user_otps["users"] = {}
-
-      top_users = sorted(
-          daily_user_otps["users"].items(), key=lambda x: x[1], reverse=True
-      )[:5]
-      lb_msg = (
-          '<blockquote><tg-emoji emoji-id="5240021484516185513">🏆</tg-emoji>'
-          " <b>𝗧𝗢𝗣 𝟱 𝗟𝗘𝗔𝗗𝗘𝗥𝗕𝗢𝗔𝗥𝗗"
-          " (TODAY)</b></blockquote>\n━━━━━━━━━━━━━━━━━\n"
-      )
-      emoji_map = [
-          ("1️⃣", "5238176680098440792"),
-          ("2️⃣", "5237806896299157399"),
-          ("3️⃣", "5239965456667812809"),
-          ("4️⃣", "5237911487342751418"),
-          ("5️⃣", "5240278297790686165"),
-      ]
-
-      if not top_users:
-        lb_msg += "<i>No OTPs received today.</i>\n"
-      else:
-        for idx, (uid_str, otp_count) in enumerate(top_users):
-          u_data = get_user(int(uid_str))
-          fname = u_data["first_name"] if u_data else "User"
-          emoji_char, emoji_id = emoji_map[idx]
-          lb_msg += (
-              f'<blockquote><tg-emoji emoji-id="{emoji_id}">{emoji_char}</tg-emoji>'
-              f" <a href='tg://user?id={uid_str}'>{html.escape(str(fname))}</a>"
-              f" - {otp_count} OTP</blockquote>\n"
-          )
-      lb_msg += "━━━━━━━━━━━━━━━━━"
-      cached_leaderboard_text = lb_msg
-
-    except Exception:
-      pass
-    time.sleep(5)
-
-
-# Admin Settings (DXA Control)
+# Admin Settings
 bot_settings = {
     "withdraw_on": True,
     "min_withdraw": 10.0,
@@ -830,6 +687,10 @@ def get_api_key():
   return random.choice(voltx_keys) if voltx_keys else API_2OO9_KEY_DEFAULT
 
 
+def get_mk_api_key():
+  return random.choice(mk_keys) if mk_keys else API_MK_KEY_DEFAULT
+
+
 def get_otp_reward(service_name):
   rates = bot_settings.get("otp_service_rates", {})
   val = rates.get(service_name, bot_settings.get("otp_default_rate", 0.5))
@@ -845,22 +706,17 @@ def update_daily_stat(key, amount=1):
 
 
 def load_local_data():
-  global recent_traffic, voltx_dynamic_data, voltx_keys, force_join_status, force_join_channels
+  global recent_traffic, voltx_dynamic_data, voltx_keys, mk_keys, force_join_status, force_join_channels
   global voltx_auto_mode, otp_forward_groups, otp_button_link, recent_success_otps, bot_settings
-  global user_active_sessions, daily_stats, daily_user_otps, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
+  global user_active_sessions, daily_stats, daily_user_otps, GLOBAL_BODY_EMOJIS, PREMIUM_APPS, pending_mk_requests
   if os.path.exists(BOT_DATA_FILE):
     try:
       with open(BOT_DATA_FILE, "r") as f:
         data = json.load(f)
         recent_traffic = data.get("recent_traffic", [])
         voltx_dynamic_data = data.get("voltx_dynamic_data", {})
-        loaded_keys = data.get("voltx_keys", [])
-
-        if not loaded_keys:
-          voltx_keys = [API_2OO9_KEY_DEFAULT]
-        else:
-          voltx_keys = loaded_keys
-
+        voltx_keys = data.get("voltx_keys", [API_2OO9_KEY_DEFAULT])
+        mk_keys = data.get("mk_keys", [API_MK_KEY_DEFAULT])
         force_join_status = data.get("force_join_status", False)
         force_join_channels = data.get("force_join_channels", [])
         voltx_auto_mode = data.get("voltx_auto_mode", True)
@@ -869,6 +725,7 @@ def load_local_data():
             "otp_button_link", "https://t.me/your_default_bot"
         )
         recent_success_otps = set(data.get("recent_success_otps", []))
+        pending_mk_requests = data.get("pending_mk_requests", {})
 
         loaded_settings = data.get("bot_settings", {})
         for k, v in loaded_settings.items():
@@ -896,9 +753,9 @@ def load_local_data():
 
 
 def save_local_data():
-  global recent_traffic, voltx_dynamic_data, voltx_keys, force_join_status, force_join_channels
+  global recent_traffic, voltx_dynamic_data, voltx_keys, mk_keys, force_join_status, force_join_channels
   global voltx_auto_mode, otp_forward_groups, otp_button_link, recent_success_otps, bot_settings
-  global user_active_sessions, daily_stats, daily_user_otps, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
+  global user_active_sessions, daily_stats, daily_user_otps, GLOBAL_BODY_EMOJIS, PREMIUM_APPS, pending_mk_requests
   try:
     with open(BOT_DATA_FILE, "w") as f:
       json.dump(
@@ -906,12 +763,14 @@ def save_local_data():
               "recent_traffic": recent_traffic,
               "voltx_dynamic_data": voltx_dynamic_data,
               "voltx_keys": voltx_keys,
+              "mk_keys": mk_keys,
               "force_join_status": force_join_status,
               "force_join_channels": force_join_channels,
               "voltx_auto_mode": voltx_auto_mode,
               "otp_forward_groups": otp_forward_groups,
               "otp_button_link": otp_button_link,
               "recent_success_otps": list(recent_success_otps),
+              "pending_mk_requests": pending_mk_requests,
               "bot_settings": bot_settings,
               "user_active_sessions": user_active_sessions,
               "daily_stats": daily_stats,
@@ -934,6 +793,7 @@ def save_local_data():
               "otp_forward_groups": otp_forward_groups,
               "otp_button_link": otp_button_link,
               "voltx_keys": voltx_keys,
+              "mk_keys": mk_keys,
               "voltx_auto_mode": voltx_auto_mode,
               "custom_global_body_emojis": GLOBAL_BODY_EMOJIS,
               "custom_premium_apps": PREMIUM_APPS,
@@ -1011,7 +871,9 @@ def send_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
   if reply_markup:
     payload["reply_markup"] = reply_markup
   try:
-    return requests.post(BASE_URL + "sendMessage", json=payload, timeout=12).json()
+    return requests.post(
+        BASE_URL + "sendMessage", json=payload, timeout=12
+    ).json()
   except Exception:
     return None
 
@@ -1264,7 +1126,30 @@ def send_otp_to_groups(formatted_text, markup):
   return sent_any
 
 
+# ========================================================
+# Dual API Fetching Helpers: 2oo9 (Voltx) & MK Network
+# ========================================================
 def fetch_live_access():
+  # 1. First attempt MK Network access_list
+  try:
+    headers = {"mknetwork-key": get_mk_api_key()}
+    res = requests.get(
+        f"{API_MK_BASE}/access_list?limit=100", headers=headers, timeout=8
+    )
+    if res.status_code == 200:
+      mk_data = res.json()
+      items = mk_data.get("data", {}).get("items", [])
+      if items:
+        # Group by detected service / country
+        services = []
+        for item in items:
+          rng = item.get("range", "")
+          services.append({"sid": "General", "ranges": [rng]})
+        return services
+  except Exception:
+    pass
+
+  # 2. Voltx 2oo9 fallback
   headers = {"mauthapi": get_api_key()}
   try:
     res = requests.get(
@@ -1278,7 +1163,44 @@ def fetch_live_access():
   return []
 
 
-def fetch_live_number(rid):
+def fetch_live_number(rid, user_id=None, service_name="Other"):
+  global pending_mk_requests
+  # 1. Try MK Network v3 /getnum/number[span_6](start_span)[span_6](end_span)
+  try:
+    mk_headers = {
+        "mknetwork-key": get_mk_api_key(),
+        "Content-Type": "application/json",
+    }
+    mk_payload = {"range": str(rid)}
+    res = requests.post(
+        f"{API_MK_BASE}/getnum/number",
+        headers=mk_headers,
+        json=mk_payload,
+        timeout=10,
+    )
+    if res.status_code == 200:
+      resp_json = res.json()
+      if resp_json.get("meta", {}).get("code") == 200:
+        data = resp_json.get("data", {})
+        req_id = data.get("request_id")
+        full_num = data.get("full_number") or data.get("number")
+        if req_id and user_id:
+          pending_mk_requests[str(req_id)] = {
+              "user_id": user_id,
+              "service": service_name,
+              "number": full_num,
+              "created_at": time.time(),
+          }
+          save_local_data()
+        return {
+            "full_number": full_num,
+            "country": data.get("country", "Unknown"),
+            "operator": data.get("operator", "Unknown"),
+        }
+  except Exception:
+    pass
+
+  # 2. Fallback to 2oo9 Voltx /getnum
   headers = {"mauthapi": get_api_key(), "Content-Type": "application/json"}
   payload = {"rid": str(rid)}
   try:
@@ -1293,19 +1215,69 @@ def fetch_live_number(rid):
   return None
 
 
+# ========================================================
+# Radar & Traffic Listeners (Dual Stream)
+# ========================================================
 def voltx_console_listener():
   global recent_traffic, voltx_dynamic_data
   cycle_count = 0
   while True:
+    current_time = int(time.time())
+    new_traffic, seen_signatures = [], set()
+
+    # 1. Check MK Network Radar[span_7](start_span)[span_7](end_span)
+    try:
+      headers = {"mknetwork-key": get_mk_api_key()}
+      res = requests.get(
+          f"{API_MK_BASE}/radar?limit=30", headers=headers, timeout=8
+      )
+      if res.status_code == 200:
+        r_data = res.json()
+        feed = r_data.get("data", {}).get("feed", [])
+        for f_item in feed:
+          raw_num = f_item.get("number", "")
+          sig = f"{f_item.get('time', 0)}_{raw_num}"
+          if sig not in seen_signatures:
+            seen_signatures.add(sig)
+            raw_range = re.sub(r"\D", "", raw_num)[:6]
+            detected_sid = "Other"
+            app_info = PREMIUM_APPS.get(detected_sid, PREMIUM_APPS["Other"])
+
+            item_data = {
+                "time": f_item.get("time"),
+                "range": raw_range,
+                "sid": detected_sid,
+                "message": f_item.get("otp", "Code"),
+                "local_receive_time": current_time,
+            }
+            new_traffic.append(item_data)
+
+            if raw_range:
+              if detected_sid not in voltx_dynamic_data:
+                voltx_dynamic_data[detected_sid] = {
+                    "emoji_id": app_info["id"],
+                    "normal_emoji": app_info["emoji"],
+                    "ranges": {},
+                }
+              if raw_range not in voltx_dynamic_data[detected_sid]["ranges"]:
+                voltx_dynamic_data[detected_sid]["ranges"][raw_range] = {
+                    "last_seen": current_time,
+                    "hits": 0,
+                }
+              voltx_dynamic_data[detected_sid]["ranges"][raw_range][
+                  "last_seen"
+              ] = current_time
+              voltx_dynamic_data[detected_sid]["ranges"][raw_range]["hits"] += 1
+    except Exception:
+      pass
+
+    # 2. Check 2oo9 Voltx Console
     try:
       headers = {"mauthapi": get_api_key()}
       res = requests.get(f"{API_2OO9_BASE}/console", headers=headers, timeout=10)
       data = res.json()
       if data.get("meta", {}).get("code") == 200:
         hits = data.get("data", {}).get("hits", [])
-        new_traffic, seen_signatures = [], set()
-        current_time = int(time.time())
-
         for h in hits:
           sig = f"{h.get('time', 0)}_{h.get('range', '')}"
           if sig not in seen_signatures:
@@ -1315,17 +1287,16 @@ def voltx_console_listener():
 
             raw_sid = h.get("sid") or "Unknown"
             raw_msg = h.get("message") or ""
-            raw_range = str(h.get("range", "")).replace("X", "")
+            raw_range = str(h.get("range", "")).replace("X", "").replace("x", "")
 
             if raw_range:
               detected_sid = detect_service(raw_msg, raw_sid)
               app_info = PREMIUM_APPS.get(detected_sid, PREMIUM_APPS["Other"])
-              emoji_id, normal_emoji = app_info["id"], app_info["emoji"]
 
               if detected_sid not in voltx_dynamic_data:
                 voltx_dynamic_data[detected_sid] = {
-                    "emoji_id": emoji_id,
-                    "normal_emoji": normal_emoji,
+                    "emoji_id": app_info["id"],
+                    "normal_emoji": app_info["emoji"],
                     "ranges": {},
                 }
               if raw_range not in voltx_dynamic_data[detected_sid]["ranges"]:
@@ -1338,41 +1309,139 @@ def voltx_console_listener():
               ] = current_time
               voltx_dynamic_data[detected_sid]["ranges"][raw_range]["hits"] += 1
 
-        fifteen_mins_ago = current_time - 900
-        for h in recent_traffic:
-          if h.get("local_receive_time", 0) >= fifteen_mins_ago:
-            sig = f"{h.get('time', 0)}_{h.get('range', '')}"
-            if sig not in seen_signatures:
-              new_traffic.append(h)
-              seen_signatures.add(sig)
+      fifteen_mins_ago = current_time - 900
+      for h in recent_traffic:
+        if h.get("local_receive_time", 0) >= fifteen_mins_ago:
+          sig = f"{h.get('time', 0)}_{h.get('range', '')}"
+          if sig not in seen_signatures:
+            new_traffic.append(h)
+            seen_signatures.add(sig)
 
-        new_traffic.sort(
-            key=lambda x: x.get("local_receive_time", 0), reverse=True
-        )
-        recent_traffic = new_traffic
+      new_traffic.sort(
+          key=lambda x: x.get("local_receive_time", 0), reverse=True
+      )
+      recent_traffic = new_traffic
 
-        services_to_delete = []
-        for sid, s_data in voltx_dynamic_data.items():
-          ranges_to_delete = []
-          for r, r_data in s_data["ranges"].items():
-            if current_time - r_data["last_seen"] > 300:
-              ranges_to_delete.append(r)
-          for r in ranges_to_delete:
-            del s_data["ranges"][r]
-          if not s_data["ranges"]:
-            services_to_delete.append(sid)
-        for sid in services_to_delete:
-          del voltx_dynamic_data[sid]
+      services_to_delete = []
+      for sid, s_data in voltx_dynamic_data.items():
+        ranges_to_delete = []
+        for r, r_data in s_data["ranges"].items():
+          if current_time - r_data["last_seen"] > 300:
+            ranges_to_delete.append(r)
+        for r in ranges_to_delete:
+          del s_data["ranges"][r]
+        if not s_data["ranges"]:
+          services_to_delete.append(sid)
+      for sid in services_to_delete:
+        del voltx_dynamic_data[sid]
 
-        cycle_count += 1
-        if cycle_count % 3 == 0:
-          save_local_data()
+      cycle_count += 1
+      if cycle_count % 3 == 0:
+        save_local_data()
 
     except Exception:
       pass
     time.sleep(10)
 
 
+# ========================================================
+# MK Network Batch Status Poller Thread (/check/status)
+# ========================================================
+def mk_status_poller_thread():
+  global pending_mk_requests, recent_success_otps, otp_forward_groups, user_active_sessions, daily_user_otps
+  while True:
+    try:
+      if pending_mk_requests:
+        now = time.time()
+        # Drop requests older than 15 mins (900s)[span_8](start_span)[span_8](end_span)
+        expired_ids = [
+            req_id
+            for req_id, meta in pending_mk_requests.items()
+            if now - meta.get("created_at", now) > 900
+        ]
+        for exp_id in expired_ids:
+          del pending_mk_requests[exp_id]
+
+        active_req_ids = [int(k) for k in list(pending_mk_requests.keys())[:100]][span_9](start_span)[span_9](end_span)
+        if active_req_ids:
+          headers = {
+              "mknetwork-key": get_mk_api_key(),
+              "Content-Type": "application/json",
+          }
+          payload = {"request_ids": active_req_ids}[span_10](start_span)[span_10](end_span)
+          res = requests.post(
+              f"{API_MK_BASE}/check/status",
+              headers=headers,
+              json=payload,
+              timeout=12,
+          )
+          if res.status_code == 200:
+            res_data = res.json().get("data", {})
+            results = res_data.get("results", [])[span_11](start_span)[span_11](end_span)[span_12](start_span)[span_12](end_span)
+
+            for r in results:
+              r_id_str = str(r.get("request_id"))
+              status = r.get("status")[span_13](start_span)[span_13](end_span)
+              if status == "success":[span_14](start_span)[span_14](end_span)
+                full_sms = r.get("full_sms", "")[span_15](start_span)[span_15](end_span)
+                otp_code = r.get("otp_code", "")[span_16](start_span)[span_16](end_span)
+                msg_text = full_sms if full_sms else f"OTP: {otp_code}"
+                raw_number = r.get("number", "")[span_17](start_span)[span_17](end_span)
+
+                req_meta = pending_mk_requests.pop(r_id_str, None)
+                if not req_meta:
+                  continue
+
+                owner_id = req_meta.get("user_id")
+                detected_srv = req_meta.get("service", "Other")
+
+                sig = f"{raw_number}_{msg_text}"
+                if sig not in recent_success_otps:
+                  recent_success_otps.add(sig)
+
+                  reward = get_otp_reward(detected_srv)
+                  update_user_stats(owner_id, reward, 0)
+                  user_balance = get_user(owner_id).get("balance", 0.0)
+
+                  deliver_to_inbox(
+                      owner_id,
+                      detected_srv,
+                      raw_number,
+                      msg_text,
+                      user_balance,
+                      reward,
+                  )
+
+                  if otp_forward_groups:
+                    formatted_message, markup = generate_otp_display(
+                        detected_srv, raw_number, msg_text
+                    )
+                    send_otp_to_groups(formatted_message, markup)
+
+                  today_date = time.strftime("%Y-%m-%d")
+                  if daily_user_otps.get("date") != today_date:
+                    daily_user_otps["date"] = today_date
+                    daily_user_otps["users"] = {}
+                  uid_str = str(owner_id)
+                  daily_user_otps["users"][uid_str] = (
+                      daily_user_otps["users"].get(uid_str, 0) + 1
+                  )
+
+                  update_daily_stat("otps", 1)
+                  save_local_data()
+
+              elif status in ["expired", "not_found"]:[span_18](start_span)[span_18](end_span)
+                pending_mk_requests.pop(r_id_str, None)
+
+            save_local_data()
+    except Exception:
+      pass
+    time.sleep(8)
+
+
+# ========================================================
+# Voltx SMS Listener
+# ========================================================
 def voltx_sms_listener():
   global recent_success_otps, otp_forward_groups, user_active_sessions, daily_user_otps
   group_sent_otps = set()
@@ -1482,6 +1551,150 @@ def voltx_sms_listener():
     time.sleep(10)
 
 
+def auto_cache_menu_thread():
+  global cached_services_kb, cached_countries_kb, voltx_auto_mode, voltx_dynamic_data
+  while True:
+    try:
+      if voltx_auto_mode and voltx_dynamic_data:
+        service_hits = [
+            (
+                sid,
+                s_data,
+                sum(r["hits"] for r in s_data["ranges"].values()),
+            )
+            for sid, s_data in voltx_dynamic_data.items()
+        ]
+        top_services = sorted(service_hits, key=lambda x: x[2], reverse=True)[
+            :15
+        ]
+
+        new_srv_kb = {"inline_keyboard": []}
+        row = []
+        styles = ["primary", "success", "danger"]
+        style_idx = 0
+        for sid, data, hits in top_services:
+          safe_sid = html.escape(str(sid))
+          row.append({
+              "text": safe_sid,
+              "callback_data": f"srv_{safe_sid[:15]}",
+              "style": styles[style_idx % 3],
+              "icon_custom_emoji_id": data["emoji_id"],
+          })
+          style_idx += 1
+          if len(row) == 2:
+            new_srv_kb["inline_keyboard"].append(row)
+            row = []
+        if row:
+          new_srv_kb["inline_keyboard"].append(row)
+        new_srv_kb["inline_keyboard"].append([{
+            "text": "CLOSE",
+            "callback_data": "close_panel",
+            "icon_custom_emoji_id": "5438541186539232243",
+            "style": "danger",
+        }])
+
+        cached_services_kb = new_srv_kb
+
+        new_cnt_kb = {}
+        for sid, data, hits in top_services:
+          safe_sid_short = html.escape(str(sid))[:15]
+          country_map = {}
+          for r, r_data in data["ranges"].items():
+            clean_r = str(r).replace("X", "").replace("x", "")
+            if not re.match(r"^\d+$", clean_r):
+              continue
+            c_code, c_name = get_country_info(clean_r)
+            if c_code not in country_map:
+              country_map[c_code] = {"name": c_name, "hits": 0}
+            country_map[c_code]["hits"] += r_data["hits"]
+
+          top_countries = sorted(
+              country_map.items(), key=lambda x: x[1]["hits"], reverse=True
+          )[:15]
+
+          cnt_kb = {"inline_keyboard": []}
+          styles_c = ["primary", "success", "danger"]
+          style_idx_c = 0
+          std_service = detect_service("", sid)
+          rate = get_otp_reward(std_service)
+
+          for c_code, c_data in top_countries:
+            c_name_full = c_data["name"]
+            parts = c_name_full.split(" ", 1)
+            emoji_char = parts[0]
+            clean_name = parts[1] if len(parts) > 1 else c_name_full
+
+            btn_text = (
+                f"Other (+{c_code}) - {rate} TK"
+                if "Other" in clean_name
+                else f"{clean_name} (+{c_code}) - {rate} TK"
+            )
+            btn = {
+                "text": btn_text,
+                "callback_data": f"cc_{safe_sid_short}_{c_code}",
+                "style": styles_c[style_idx_c % 3],
+            }
+            if emoji_char in GLOBAL_BODY_EMOJIS:
+              btn["icon_custom_emoji_id"] = GLOBAL_BODY_EMOJIS[emoji_char]
+
+            cnt_kb["inline_keyboard"].append([btn])
+            style_idx_c += 1
+
+          cnt_kb["inline_keyboard"].append([{
+              "text": "BACK",
+              "callback_data": "back_to_services",
+              "icon_custom_emoji_id": "5438541186539232243",
+              "style": "danger",
+          }])
+          new_cnt_kb[safe_sid_short] = cnt_kb
+
+        cached_countries_kb = new_cnt_kb
+
+      global cached_leaderboard_text, daily_user_otps
+      today = time.strftime("%Y-%m-%d")
+      if daily_user_otps.get("date") != today:
+        daily_user_otps["date"] = today
+        daily_user_otps["users"] = {}
+
+      top_users = sorted(
+          daily_user_otps["users"].items(), key=lambda x: x[1], reverse=True
+      )[:5]
+      lb_msg = (
+          '<blockquote><tg-emoji emoji-id="5240021484516185513">🏆</tg-emoji>'
+          " <b>𝗧𝗢𝗣 𝟱 𝗟𝗘𝗔𝗗𝗘𝗥𝗕𝗢𝗔𝗥𝗗"
+          " (TODAY)</b></blockquote>\n━━━━━━━━━━━━━━━━━\n"
+      )
+      emoji_map = [
+          ("1️⃣", "5238176680098440792"),
+          ("2️⃣", "5237806896299157399"),
+          ("3️⃣", "5239965456667812809"),
+          ("4️⃣", "5237911487342751418"),
+          ("5️⃣", "5240278297790686165"),
+      ]
+
+      if not top_users:
+        lb_msg += "<i>No OTPs received today.</i>\n"
+      else:
+        for idx, (uid_str, otp_count) in enumerate(top_users):
+          u_data = get_user(int(uid_str))
+          fname = u_data["first_name"] if u_data else "User"
+          emoji_char, emoji_id = emoji_map[idx]
+          lb_msg += (
+              f'<blockquote><tg-emoji emoji-id="{emoji_id}">{emoji_char}</tg-emoji>'
+              f" <a href='tg://user?id={uid_str}'>{html.escape(str(fname))}</a>"
+              f" - {otp_count} OTP</blockquote>\n"
+          )
+      lb_msg += "━━━━━━━━━━━━━━━━━"
+      cached_leaderboard_text = lb_msg
+
+    except Exception:
+      pass
+    time.sleep(5)
+
+
+# ==========================================
+# Database Functions
+# ==========================================
 def init_sqlite():
   conn = sqlite3.connect("bot_database.db")
   cursor = conn.cursor()
@@ -1549,7 +1762,7 @@ def migrate_sqlite_to_firebase():
 
 def init_firebase_from_file():
   global current_db_mode, db_firebase, bot_settings, force_join_status, force_join_channels
-  global otp_forward_groups, otp_button_link, voltx_keys, voltx_auto_mode, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
+  global otp_forward_groups, otp_button_link, voltx_keys, mk_keys, voltx_auto_mode, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
   if os.path.exists("temp_firebase.json"):
     try:
       if not firebase_admin._apps:
@@ -1575,6 +1788,8 @@ def init_firebase_from_file():
           otp_button_link = data["otp_button_link"]
         if "voltx_keys" in data:
           voltx_keys = data["voltx_keys"]
+        if "mk_keys" in data:
+          mk_keys = data["mk_keys"]
         if "voltx_auto_mode" in data:
           voltx_auto_mode = data["voltx_auto_mode"]
         if "custom_global_body_emojis" in data:
@@ -1717,36 +1932,6 @@ def get_total_users():
   return len(get_all_user_ids())
 
 
-def get_top_users(limit=5):
-  global current_db_mode, db_firebase
-  if current_db_mode == "firebase" and db_firebase:
-    docs = (
-        db_firebase.collection("users")
-        .order_by("balance", direction=firestore.Query.DESCENDING)
-        .limit(limit)
-        .stream()
-    )
-    return [
-        (
-            doc.to_dict().get("user_id"),
-            doc.to_dict().get("first_name", "User"),
-            doc.to_dict().get("balance"),
-        )
-        for doc in docs
-    ]
-  else:
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT user_id, first_name, balance FROM users ORDER BY balance DESC"
-        " LIMIT ?",
-        (limit,),
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
-
-
 def get_otp_group_keyboard():
   kb = {"inline_keyboard": []}
 
@@ -1871,7 +2056,7 @@ def get_voltx_keys_keyboard():
   }])
 
   for idx, key in enumerate(voltx_keys):
-    masked_key = f"{key[:4]}...{key[-4:]}" if len(key) > 8 else key
+    masked_key = f"2oo9: {key[:4]}...{key[-4:]}" if len(key) > 8 else key
     kb["inline_keyboard"].append([{
         "text": f"Delete: {masked_key}",
         "callback_data": f"del_vk_{idx}",
@@ -1879,12 +2064,29 @@ def get_voltx_keys_keyboard():
         "style": "danger",
     }])
 
-  kb["inline_keyboard"].append([{
-      "text": "Add Panel Key",
-      "callback_data": "add_vk",
-      "icon_custom_emoji_id": "5429501315468270290",
-      "style": "success",
-  }])
+  for idx, key in enumerate(mk_keys):
+    masked_key = f"MK: {key[:4]}...{key[-4:]}" if len(key) > 8 else key
+    kb["inline_keyboard"].append([{
+        "text": f"Delete: {masked_key}",
+        "callback_data": f"del_mk_{idx}",
+        "icon_custom_emoji_id": "5438178416421544431",
+        "style": "danger",
+    }])
+
+  kb["inline_keyboard"].append([
+      {
+          "text": "+ 2oo9 Key",
+          "callback_data": "add_vk",
+          "icon_custom_emoji_id": "5429501315468270290",
+          "style": "success",
+      },
+      {
+          "text": "+ MK Key",
+          "callback_data": "add_mk",
+          "icon_custom_emoji_id": "5429501315468270290",
+          "style": "primary",
+      },
+  ])
   kb["inline_keyboard"].append([{
       "text": "Back",
       "callback_data": "back_to_admin",
@@ -1944,7 +2146,7 @@ def get_admin_inline_keyboard():
   return {
       "inline_keyboard": [
           [{
-              "text": "STEX SETTINGS",
+              "text": "STEX / MK SETTINGS",
               "callback_data": "manage_voltx",
               "icon_custom_emoji_id": "5877466056548691003",
               "style": "danger",
@@ -2385,7 +2587,7 @@ def get_number_allocation_content(sid_short, c_code, user_id=None):
       if sid_val.lower().startswith(sid_short.lower()):
         full_sid = sid_val
         for r in s.get("ranges", []):
-          clean_r = str(r).replace("X", "")
+          clean_r = str(r).replace("X", "").replace("x", "")
           if c_code.startswith(clean_r) or clean_r.startswith(c_code):
             if clean_r not in target_ranges:
               target_ranges.append(clean_r)
@@ -2400,7 +2602,8 @@ def get_number_allocation_content(sid_short, c_code, user_id=None):
 
   for _ in range(req_count):
     selected_rid = random.choice(best_ranges)
-    num_data = fetch_live_number(selected_rid)
+    # Dual number fetch from MK Network or Voltx
+    num_data = fetch_live_number(selected_rid, user_id=user_id, service_name=full_sid)
     if num_data:
       full_number = html.escape(str(num_data.get("full_number", "")))
       country = html.escape(str(num_data.get("country", "Unknown")))
@@ -2501,7 +2704,7 @@ def broadcast_worker(from_chat_id, message_id, target_msg_id):
 
 
 def handle_message(message):
-  global waiting_for_firebase, current_db_mode, db_firebase, user_states, voltx_keys
+  global waiting_for_firebase, current_db_mode, db_firebase, user_states, voltx_keys, mk_keys
   global force_join_channels, otp_forward_groups, otp_button_link, bot_settings, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
 
   if message.get("chat", {}).get("type") != "private":
@@ -2629,7 +2832,21 @@ def handle_message(message):
         edit_message(
             chat_id,
             target_msg_id,
-            "🔑 <b>VOLTX KEY SYSTEM</b>\nManage API Keys below:",
+            "🔑 <b>PANEL KEY SYSTEM</b>\nManage API Keys below:",
+            reply_markup=get_voltx_keys_keyboard(),
+        )
+      del user_states[user_id]
+      delete_message(chat_id, message_id)
+      return
+
+    elif state == "waiting_mk_key":
+      mk_keys.append(text.strip())
+      save_local_data()
+      if target_msg_id:
+        edit_message(
+            chat_id,
+            target_msg_id,
+            "🔑 <b>PANEL KEY SYSTEM</b>\nManage API Keys below:",
             reply_markup=get_voltx_keys_keyboard(),
         )
       del user_states[user_id]
@@ -2755,6 +2972,7 @@ def handle_message(message):
                   "otp_forward_groups": otp_forward_groups,
                   "otp_button_link": otp_button_link,
                   "voltx_keys": voltx_keys,
+                  "mk_keys": mk_keys,
                   "voltx_auto_mode": voltx_auto_mode,
                   "custom_global_body_emojis": GLOBAL_BODY_EMOJIS,
                   "custom_premium_apps": PREMIUM_APPS,
@@ -2774,6 +2992,8 @@ def handle_message(message):
                 otp_button_link = data["otp_button_link"]
               if "voltx_keys" in data:
                 voltx_keys = data["voltx_keys"]
+              if "mk_keys" in data:
+                mk_keys = data.get("mk_keys", [API_MK_KEY_DEFAULT])
               if "voltx_auto_mode" in data:
                 voltx_auto_mode = data["voltx_auto_mode"]
               if "custom_global_body_emojis" in data:
@@ -3426,8 +3646,8 @@ def handle_message(message):
 
 
 def handle_callback(callback_query):
-  global user_states, voltx_auto_mode, current_db_mode, force_join_status, force_join_channels, voltx_keys
-  global otp_forward_groups, bot_settings, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
+  global user_states, voltx_auto_mode, current_db_mode, force_join_status, force_join_channels
+  global voltx_keys, mk_keys, otp_forward_groups, bot_settings, GLOBAL_BODY_EMOJIS, PREMIUM_APPS
   query_id = callback_query["id"]
   user_id = callback_query["from"]["id"]
   data = callback_query["data"]
@@ -3635,12 +3855,12 @@ def handle_callback(callback_query):
     answer_callback_query(query_id, f"Request {action.title()}d!")
     return
 
-  # ===== Voltx Key Manager =====
+  # ===== Voltx & MK Key Manager =====
   if data == "manage_voltx":
     edit_message(
         chat_id,
         message_id,
-        "🔑 <b>PANEL KEY SYSTEM</b>\nManage API Keys below:",
+        "🔑 <b>PANEL KEY SYSTEM (2oo9 / MK NETWORK)</b>\nManage API Keys below:",
         reply_markup=get_voltx_keys_keyboard(),
     )
     answer_callback_query(query_id)
@@ -3650,7 +3870,7 @@ def handle_callback(callback_query):
     edit_message(
         chat_id,
         message_id,
-        "🔑 <b>PANEL KEY SYSTEM</b>\nManage API Keys below:",
+        "🔑 <b>PANEL KEY SYSTEM (2oo9 / MK NETWORK)</b>\nManage API Keys below:",
         reply_markup=get_voltx_keys_keyboard(),
     )
     answer_callback_query(
@@ -3661,7 +3881,16 @@ def handle_callback(callback_query):
     edit_message(
         chat_id,
         message_id,
-        "🔑 <b>Please reply to this message with the new Panel API Key.</b>",
+        "🔑 <b>Please reply with the new 2oo9 API Key:</b>",
+        reply_markup=get_back_only_keyboard(),
+    )
+    answer_callback_query(query_id)
+  elif data == "add_mk":
+    user_states[user_id] = {"state": "waiting_mk_key", "msg_id": message_id}
+    edit_message(
+        chat_id,
+        message_id,
+        "🔑 <b>Please reply with the new MK Network Key (mknetwork-key):</b>",
         reply_markup=get_back_only_keyboard(),
     )
     answer_callback_query(query_id)
@@ -3677,10 +3906,27 @@ def handle_callback(callback_query):
             "🔑 <b>PANEL KEY SYSTEM</b>\nManage API Keys below:",
             reply_markup=get_voltx_keys_keyboard(),
         )
-        answer_callback_query(query_id, "Key Deleted!")
+        answer_callback_query(query_id, "2oo9 Key Deleted!")
       else:
         answer_callback_query(
             query_id, "Cannot delete the only key!", show_alert=True
+        )
+  elif data.startswith("del_mk_"):
+    idx = int(data[7:])
+    if idx < len(mk_keys):
+      if len(mk_keys) > 1:
+        mk_keys.pop(idx)
+        save_local_data()
+        edit_message(
+            chat_id,
+            message_id,
+            "🔑 <b>PANEL KEY SYSTEM</b>\nManage API Keys below:",
+            reply_markup=get_voltx_keys_keyboard(),
+        )
+        answer_callback_query(query_id, "MK Key Deleted!")
+      else:
+        answer_callback_query(
+            query_id, "Cannot delete the only MK key!", show_alert=True
         )
 
   # ===== Force Join Manager =====
@@ -4180,7 +4426,6 @@ def run_http_server():
 def main():
   global BOT_USERNAME
 
-  # 🌟 Render Free Web Service Port Binding Thread
   threading.Thread(target=run_http_server, daemon=True).start()
 
   load_local_data()
@@ -4192,11 +4437,11 @@ def main():
 
   threading.Thread(target=voltx_console_listener, daemon=True).start()
   threading.Thread(target=voltx_sms_listener, daemon=True).start()
+  threading.Thread(target=mk_status_poller_thread, daemon=True).start()
   threading.Thread(target=auto_cache_menu_thread, daemon=True).start()
 
   print(
-      f"Bot @{BOT_USERNAME} is running with Voltx, DXA Control, Emoji Manager &"
-      " OTP Forwarding..."
+      f"Bot @{BOT_USERNAME} running with 2oo9 & MK Network v3 API, DXA Control & OTP Forwarding..."
   )
 
   offset = None
